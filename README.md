@@ -2,7 +2,7 @@
 
 A beautiful, interactive expense tracking dashboard built with HTML, CSS, and Chart.js.
 
-![Dashboard Preview](Screenshot.png)
+![Dashboard Preview](Screenshot.jpg)
 
 ## 🎯 Features
 
@@ -27,7 +27,7 @@ A beautiful, interactive expense tracking dashboard built with HTML, CSS, and Ch
 
 ## 🚀 Live Demo
 
-View the live dashboard once doenloaded.
+View the live dashboard once downloaded.
 
 ## ⚠️ DISCLAIMER
 
@@ -77,7 +77,7 @@ The dashboard expects data in the following JSON format:
 
 > **Note**: Dates are now in ISO 8601 format (`YYYY-MM-DD`). Explicit `year` and `month` fields are required for filtering.
 
-## � Migration Tool
+##   Migration Tool
 If you have data in the old format (DD/MM/YY), use the included Python script to convert it:
 
 ```bash
@@ -117,7 +117,7 @@ The interactive mode (`-i` flag) will:
 - **Auto-Month/Year**: Calculates month names and years from transaction dates.
 - **Installment Support**: Properly extracts installment transactions, recording the monthly payment amount.
 
-## �🛡️ Security
+##  🛡️ Security
 - **XSS Protection**: Data rendering is sanitized to prevent Cross-Site Scripting attacks.
 - **SRI Check**: External libraries (Chart.js) are loaded with Subresource Integrity hashes.
 
