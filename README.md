@@ -27,7 +27,7 @@ A beautiful, interactive expense tracking dashboard built with HTML, CSS, and Ch
 
 ## 🚀 Live Demo
 
-View the live dashboard: [Your GitHub Pages URL will be here]
+View the live dashboard once doenloaded.
 
 ## ⚠️ DISCLAIMER
 
