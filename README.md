@@ -12,12 +12,14 @@ A beautiful, interactive expense tracking dashboard built with HTML, CSS, and Ch
   - Top merchants analysis (bar chart)
   - Card usage distribution (pie chart)
 
-- **Multi-Year Analysis**: 
-  - Filter expenses by specific year
+- **Multi-Year Analysis**:
+  - **Multi-Select Year Picker**: Toggle pill buttons to select one or more years simultaneously (e.g. 2024 + 2025 combined)
   - **Year-over-Year Comparison**: Overlay chart comparing monthly spending trends across different years
-- **Smart Filtering**: Filter expenses by year, month, category, and card
+  - **Accurate Monthly Average**: Counts unique year-month pairs with actual spending; months with no data are excluded from the average calculation
 
-- **Summary Cards**: Quick overview of total spending, average per transaction, and transaction count
+- **Smart Filtering**: Filter expenses by year (multi-select), month, category, and card
+
+- **Summary Cards**: Quick overview of total spending, transactions, average per transaction, active months, and monthly average
 
 - **Transaction List**: Detailed view of recent transactions
 

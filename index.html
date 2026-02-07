@@ -204,6 +204,41 @@
             border-color: #667eea;
         }
 
+        .year-picker {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .year-btn {
+            padding: 8px 16px;
+            border: 2px solid var(--input-border);
+            border-radius: 20px;
+            background: var(--input-bg);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            user-select: none;
+        }
+
+        .year-btn:hover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .year-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        .year-btn-all {
+            font-style: italic;
+        }
+
         .monthly-chart-container {
             margin-bottom: 40px;
         }
@@ -456,10 +491,10 @@
 
             <div class="controls">
                 <div class="control-group">
-                    <label for="yearFilter">Filter by Year:</label>
-                    <select id="yearFilter">
-                        <option value="all">All Years</option>
-                    </select>
+                    <label>Filter by Year:</label>
+                    <div id="yearFilter" class="year-picker">
+                        <!-- Year buttons populated by JavaScript -->
+                    </div>
                 </div>
                 <div class="control-group">
                     <label for="monthFilter">Filter by Month:</label>
@@ -708,15 +743,71 @@
 
         // Populate filter dropdowns
         function populateFilters() {
-            const years = [...new Set(allExpenses.map(exp => exp.year))].sort((a, b) => b - a);
+            const years = [...new Set(allExpenses.map(exp => exp.year))].sort((a, b) => a - b);
             const months = [...new Set(allExpenses.map(exp => exp.month))];
             const categories = [...new Set(allExpenses.map(exp => exp.category))].sort();
             const cards = [...new Set(allExpenses.map(exp => exp.card))].sort();
 
-            populateDropdown('yearFilter', years);
+            populateYearPicker(years);
             populateDropdown('monthFilter', sortMonthsChronologically(months));
             populateDropdown('categoryFilter', categories);
             populateDropdown('cardFilter', cards);
+        }
+
+        // Build year picker with toggle buttons
+        function populateYearPicker(years) {
+            const container = document.getElementById('yearFilter');
+            container.innerHTML = '';
+
+            // "All" button
+            const allBtn = document.createElement('button');
+            allBtn.type = 'button';
+            allBtn.className = 'year-btn year-btn-all active';
+            allBtn.textContent = 'All';
+            allBtn.dataset.year = 'all';
+            allBtn.addEventListener('click', () => {
+                // If All is clicked, deselect everything and select All
+                container.querySelectorAll('.year-btn').forEach(b => b.classList.remove('active'));
+                allBtn.classList.add('active');
+                applyFilters();
+            });
+            container.appendChild(allBtn);
+
+            // Individual year buttons
+            years.forEach(year => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'year-btn';
+                btn.textContent = year;
+                btn.dataset.year = year;
+                btn.addEventListener('click', () => {
+                    // Deselect "All" button
+                    allBtn.classList.remove('active');
+                    // Toggle this year
+                    btn.classList.toggle('active');
+                    // If no years are selected, revert to All
+                    const anySelected = container.querySelectorAll('.year-btn:not(.year-btn-all).active').length > 0;
+                    if (!anySelected) {
+                        allBtn.classList.add('active');
+                    }
+                    applyFilters();
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        // Get currently selected years from the picker
+        function getSelectedYears() {
+            const container = document.getElementById('yearFilter');
+            const allBtn = container.querySelector('.year-btn-all');
+            if (allBtn && allBtn.classList.contains('active')) {
+                return 'all';
+            }
+            const selected = [];
+            container.querySelectorAll('.year-btn:not(.year-btn-all).active').forEach(btn => {
+                selected.push(parseInt(btn.dataset.year));
+            });
+            return selected;
         }
 
         function populateDropdown(elementId, options) {
@@ -735,7 +826,7 @@
 
         // Setup event listeners
         function setupEventListeners() {
-            document.getElementById('yearFilter').addEventListener('change', applyFilters);
+            // Year filter uses button click listeners (set up in populateYearPicker)
             document.getElementById('monthFilter').addEventListener('change', applyFilters);
             document.getElementById('categoryFilter').addEventListener('change', applyFilters);
             document.getElementById('cardFilter').addEventListener('change', applyFilters);
@@ -744,14 +835,14 @@
 
         // Apply filters
         function applyFilters() {
-            const yearFilter = document.getElementById('yearFilter').value;
+            const selectedYears = getSelectedYears();
             const monthFilter = document.getElementById('monthFilter').value;
             const categoryFilter = document.getElementById('categoryFilter').value;
             const cardFilter = document.getElementById('cardFilter').value;
             const searchTerm = document.getElementById('searchMerchant').value.toLowerCase();
 
             filteredExpenses = allExpenses.filter(expense => {
-                const yearMatch = yearFilter === 'all' || expense.year.toString() === yearFilter;
+                const yearMatch = selectedYears === 'all' || selectedYears.includes(expense.year);
                 const monthMatch = monthFilter === 'all' || expense.month === monthFilter;
                 const categoryMatch = categoryFilter === 'all' || expense.category === categoryFilter;
                 const cardMatch = cardFilter === 'all' || expense.card === cardFilter;
@@ -773,10 +864,20 @@
         // Update summary cards
         function updateSummaryCards() {
             const totalSpent = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
-            const avgTransaction = totalSpent / filteredExpenses.length;
+            const avgTransaction = filteredExpenses.length > 0 ? totalSpent / filteredExpenses.length : 0;
             const transactionCount = filteredExpenses.length;
-            const monthsActive = new Set(filteredExpenses.map(exp => exp.month)).size;
-            const monthlyAverage = monthsActive > 0 ? totalSpent / monthsActive : 0;
+
+            // Count unique year-month pairs that have actual spending (> 0)
+            // Dec 2024 and Dec 2025 count as 2 separate months
+            // Months with $0 spending are excluded as data-less
+            const monthTotals = {};
+            filteredExpenses.forEach(exp => {
+                const key = `${exp.year}-${exp.month}`;
+                monthTotals[key] = (monthTotals[key] || 0) + exp.amount;
+            });
+            // Only count months where total spending > 0
+            const monthsWithData = Object.values(monthTotals).filter(total => total > 0).length;
+            const monthlyAverage = monthsWithData > 0 ? totalSpent / monthsWithData : 0;
 
             document.getElementById('summaryCards').innerHTML = `
                 <div class="card">
@@ -793,7 +894,7 @@
                 </div>
                 <div class="card">
                     <h3>Active Months</h3>
-                    <div class="amount">${monthsActive}</div>
+                    <div class="amount">${monthsWithData}</div>
                 </div>
                 <div class="card">
                     <h3>Monthly Average</h3>
