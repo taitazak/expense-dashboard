@@ -1,31 +1,34 @@
 ---
-name: Feature Request
-about: Suggest a new feature or enhancement
+name: Feature request
+about: Suggest an improvement or new capability
 title: '[FEATURE] '
 labels: enhancement
 assignees: ''
 ---
 
-## Feature Description
-<!-- A clear and concise description of the feature you'd like to see -->
+## What would you like to do that you can't today?
 
-## Problem Statement
-<!-- What problem does this feature solve? Why is it needed? -->
+<!-- Describe the use case in one or two sentences, from the user's
+     perspective rather than the implementation's. -->
 
-## Proposed Solution
-<!-- Describe how you envision this feature working -->
+## Why is the current behaviour insufficient?
 
-## Alternatives Considered
-<!-- Have you considered any alternative solutions or features? -->
+<!-- What did you try? What's the workaround you're using right now,
+     and why is it painful enough to ask for a change? -->
 
-## Use Case
-<!-- Describe a specific scenario where this feature would be useful -->
+## Proposed change
 
-## Priority
-<!-- Select one: High / Medium / Low -->
+<!-- Optional. If you have a specific idea for the UX or the data
+     model, sketch it here. Otherwise leave blank and let the
+     discussion converge. -->
 
-## Additional Context
-<!-- Add any other context, screenshots, or examples about the feature request here -->
+## Scope check (please tick what applies)
 
-## Related Components
-<!-- Which parts of the system does this affect? (e.g., PDF Parser, Categorization, UI, etc.) -->
+- [ ] This is something an individual user can do alone with their own
+      browser data — no server required.
+- [ ] If this involves a new bank, I can share at least one redacted
+      sample statement to develop and test against.
+- [ ] If this involves storing new data, I'm OK with it living in
+      IndexedDB on the same browser profile.
+
+## Anything else

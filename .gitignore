@@ -1,0 +1,26 @@
+# macOS / Windows / Linux cruft
+.DS_Store
+Thumbs.db
+*~
+
+# Editor metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local backups produced by the in-app "Export local data" button. These
+# usually contain real transaction history, so we keep them out of git
+# by default — rename the file if you genuinely want to commit a sample.
+kalkala-backup-*.json
+
+# Anything obviously private
+*_real.json
+*_private.json
+real_expense_data.json
+my_expenses.json
+
+# Node tooling (only relevant if a contributor runs `node --check` via a
+# local install — not needed to run the app itself)
+node_modules/
+npm-debug.log

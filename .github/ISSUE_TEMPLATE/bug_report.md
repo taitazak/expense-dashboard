@@ -1,38 +1,47 @@
 ---
 name: Bug Report
-about: Report a bug or issue
+about: Something isn't working
 title: '[BUG] '
 labels: bug
 assignees: ''
 ---
 
-## Bug Description
-<!-- A clear and concise description of what the bug is -->
+## What happened
 
-## Steps to Reproduce
+<!-- One or two sentences. -->
+
+## Steps to reproduce
+
 1.
 2.
 3.
 
-## Expected Behavior
-<!-- What you expected to happen -->
+## Expected behaviour
 
-## Actual Behavior
-<!-- What actually happened -->
+<!-- What should have happened. -->
+
+## Actual behaviour
+
+<!-- What did happen. Include console output or a screenshot if it
+     surfaces something useful. -->
 
 ## Environment
-- OS: <!-- e.g., Windows 11, macOS 14, Ubuntu 22.04 -->
-- Python Version: <!-- e.g., 3.9, 3.10, 3.11 -->
-- PDF Type: <!-- e.g., Bank Leumi credit card statement, Month/Year -->
 
-## Error Messages
-<!-- If applicable, paste any error messages or stack traces -->
+- Browser + version: <!-- e.g. Chrome 134, Firefox 128, Safari 18 -->
+- OS: <!-- e.g. macOS 14, Windows 11, Ubuntu 24.04 -->
+- Served over `file://` or `http://`?:
+- If a parser bug — which bank? Which statement period?
+
+## Sample data
+
+<!-- If the bug only reproduces with specific data, please attach a
+     redacted JSON export (Manage → Backups → Export) or a redacted PDF.
+     NEVER paste real account numbers, IBANs, or balances. -->
+
+## Console output
+
 ```
-Paste error here
+Paste any error / warning lines here
 ```
 
-## Sample Data
-<!-- If possible, provide a sample PDF or transaction data (remove sensitive information!) -->
-
-## Additional Context
-<!-- Add any other context about the problem here -->
+## Anything else
