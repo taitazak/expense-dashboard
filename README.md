@@ -1,155 +1,183 @@
 # Personal Expense Dashboard
 
-A beautiful, interactive expense tracking dashboard built with HTML, CSS, and Chart.js.
+A single-page app that imports PDF bank statements into a local table and
+turns them into charts, filters, and monthly totals. Everything runs in
+the browser — nothing leaves your machine, nothing touches a server.
 
-![Dashboard Preview](Screenshot.jpg)
+## Screenshots
 
-## 🎯 Features
+**Stats dashboard** — multi-year trend, category & account breakdowns,
+top merchants, headline totals.
 
-- **Visual Analytics**: Interactive charts showing spending patterns
-  - Monthly spending trends (line chart)
-  - Category breakdown (doughnut chart)
-  - Top merchants analysis (bar chart)
-  - Card usage distribution (pie chart)
+![Stats dashboard](docs/screenshots/stats.png)
 
-- **Multi-Year Analysis**:
-  - **Multi-Select Year Picker**: Toggle pill buttons to select one or more years simultaneously (e.g. 2024 + 2025 combined)
-  - **Year-over-Year Comparison**: Overlay chart comparing monthly spending trends across different years
-  - **Accurate Monthly Average**: Counts unique year-month pairs with actual spending; months with no data are excluded from the average calculation
+**Manage > Transactions** — search + filter, inline category / account /
+type editing, original-vs-display merchant stack.
 
-- **Smart Filtering**: Filter expenses by year (multi-select), month, category, and card
+![Manage Transactions](docs/screenshots/manage-transactions.png)
 
-- **Summary Cards**: Quick overview of total spending, transactions, average per transaction, active months, and monthly average
+**Manage > Rules** — one row per pattern, with both a Display-name
+override and a Category column. Match modes: substring or regex.
 
-- **Transaction List**: Detailed view of recent transactions
+![Manage Rules](docs/screenshots/manage-rules.png)
 
-- **Hebrew Support**: Full RTL (Right-to-Left) language support
+**Manage > Categories** — usage counts, totals, per-category Income and
+Excluded toggles.
 
-## 🚀 Live Demo
+![Manage Categories](docs/screenshots/manage-categories.png)
 
-View the live dashboard once downloaded.
+> **TODO** — add screenshots of the Landing hub and the Import review
+> table once the next round of UI work lands. Place them in
+> `docs/screenshots/` as `landing.png` and `import-review.png`.
 
-## ⚠️ DISCLAIMER
+## Why this exists
 
-**This tool is provided for educational and informational purposes only.**
+Most personal-finance tools need an account, a cloud sync, or direct
+read-only access to your bank. This project does none of those. You drop
+in a PDF you already downloaded from your bank, the parser reads it on
+the client, and the transactions get stored in IndexedDB on the same
+profile. If you clear site data, the dashboard forgets everything — so
+the "export local data" button exists to let you keep backups.
 
-- This dashboard is a visualization tool and does NOT provide financial advice
-- I am not a financial advisor, accountant, or tax professional
-- All financial data processing happens locally in your browser
-- **You are solely responsible for:**
-  - The accuracy of your financial data
-  - Securing your personal financial information
-  - Any financial decisions you make based on this tool
-  - Compliance with applicable laws and regulations
+## What it does
 
-**Security & Privacy:**
-- Never commit real financial data to public repositories
-- This tool does not transmit data to any server
-- Keep your actual expense data files private and secure
-- Use at your own risk
+- **Import** a PDF statement from any supported bank. The import flow
+  auto-detects the bank template, previews the parsed rows, lets you
+  edit merchant display names and categories inline, and commits the
+  reviewed batch. Multi-account PDFs (e.g. N26 Main + Spaces) ask you
+  which real account each group belongs to before committing.
+- **Deduplicate** on import — rows that match a prior transaction by
+  date + amount + merchant are flagged. The Duplicates tab in Manage
+  lets you dismiss false positives so they stop getting flagged.
+- **Auto-categorize** using keyword rules. Manual category edits in the
+  review table and in the Stats recent-transactions list are
+  auto-learned as rules. Rules are visible, editable, and deletable on
+  the unified **Manage > Rules** page (one row per pattern, with both a
+  Display-name override and a Category assignment column).
+- **Beautify merchants** — a brand-collapse engine strips noisy
+  prefixes (MB WAY, COMPRA *, dates, VISA, payment-provider junk) and
+  collapses variants of the same merchant into a single display name.
+  You can add your own collapses as regex rules under Manage > Rules.
+- **Analyze** — the Stats view has multi-year selection, category/
+  account/merchant filters, income/expense split, monthly averages,
+  and a live-editable Recent Transactions table (per-row category,
+  account, type, and display-name edits).
+- **Sortable tables** everywhere — click any column header in Rules,
+  Manage Transactions, or the Stats Recent Transactions list to toggle
+  ascending/descending by that column. Amount sorts on absolute value
+  so income and expense rows sort together.
+- **Income-vs-expense filter** — categories flagged as *income* (e.g.
+  "Income", "Salary") are hidden by default in spend totals. The
+  "Include income categories" toggle in Stats flips them back in. A
+  refund booked under a non-income category (e.g. a refund to
+  Groceries) stays visible regardless.
+- **Manage** — accounts (with transaction counts + editable IBANs),
+  categories (with the "is income" and "exclude" flags), keyword +
+  display rules, per-merchant overrides, duplicate dismissals, import
+  history, and full JSON backup/restore. Two separate restore options:
+  *Import everything* (transactions + settings, mirrors a full export)
+  and *Import settings only* (accounts, categories, rules, merchants
+  — no transactions). There's also an in-app recovery flow for when
+  the browser's IndexedDB layer gets wedged.
 
-**No Warranty:**
-This software is provided "AS IS" without warranty of any kind, express or implied. The author is not liable for any damages or losses resulting from use of this tool.
+## Supported banks
 
-## 💻 Usage
+PDF parsers currently ship for:
 
-1. Clone this repository
-2. Open `index.html` in your browser
-3. The dashboard will load sample data from `expense_data.json`
+- **Bank Leumi** (Israel) — credit card statements (RTL/Hebrew supported)
+- **N26** (Germany) — current account statements (multi-account, Spaces)
+- **Santander** (Portugal) — EXTRATO mensal checking account
+- **ING-DiBa** (Germany) — Kontoauszug
+- **ActivoBank** (Portugal) — EXTRATO COMBINADO
 
-## 📊 Data Format
+Adding a new bank means dropping a file in `src/templates/` that
+registers a matcher + parser with `App.templates.register`. See
+[CONTRIBUTING.md](CONTRIBUTING.md). No other plumbing needed.
 
-The dashboard expects data in the following JSON format:
+## Running it
 
-```json
-[
-    {
-        "date": "2024-01-01",
-        "year": 2024,
-        "month": "January",
-        "merchant": "Merchant Name",
-        "category": "Category Name",
-        "card": "1234",
-        "amount": 100.00
-    }
-]
+The app is pure static HTML/JS — no build step, no server required.
+
+**Easiest:** open `index.html` in a browser. Chrome, Firefox, Safari,
+Edge all work.
+
+## Try it with sample data
+
+The `samples/` folder ships with everything you need to kick the tires
+without uploading a real statement:
+
+- `sample-backup.json` — a full backup (40 transactions across
+  Feb–Apr 2026, 2 accounts, 5 categories including one income-flagged,
+  10 keyword rules, 5 brand-collapse rules, and per-merchant display
+  overrides). Load it via **Manage > Backup / Restore > Import
+  everything**.
+- `n26-statement.pdf`, `santander-statement.pdf`, `ing-statement.pdf`,
+  `activo-statement.pdf`, `leumi-statement.pdf` — one synthetic PDF
+  per template, shaped to match each parser's expected layout. Drop
+  them into the Import flow one at a time to see each parser in
+  action.
+
+The sample PDFs contain only made-up transactions and placeholder
+IBANs — safe to commit, safe to share.
+
+## Privacy
+
+- Everything is stored in IndexedDB, scoped to the browser profile and
+  origin that loaded the page. It never crosses the network.
+- The app pulls Chart.js and PDF.js from a CDN (`cdnjs.cloudflare.com`)
+  with SRI integrity pins. If you want a fully air-gapped copy, vendor
+  those libraries locally and swap the `<script>` URLs in `index.html`.
+- Use the **Export local data** button to get a JSON snapshot of your
+  transactions, accounts, rules, and settings. Keep those backups
+  somewhere private — the project `.gitignore` already excludes
+  `kalkala-backup-*.json`.
+
+## Project layout
+
+```
+src/
+├── app.js              # boot: theme, storage open, route registration
+├── styles.css
+├── core/               # shared infra used by every feature
+│   ├── util.js         # el(), escapeHtml, formatters, modal, toast
+│   ├── router.js       # hash-based router, file:// compatible
+│   ├── storage.js      # IndexedDB layer + export/repair/diagnose
+│   └── pdf-loader.js   # on-demand PDF.js loader
+├── templates/          # one file per bank — register + match + parse
+│   ├── registry.js
+│   ├── leumi.js  n26.js  santander.js  ing.js  activo.js
+├── processing/         # cross-cutting data passes
+│   ├── categorize.js   # keyword rule engine + history matching
+│   ├── duplicate.js    # signature-based dedupe
+│   ├── transfer.js     # transfer-pair heuristic
+│   ├── normalize.js    # merchant name beautifier + brand collapses
+│   └── dates.js        # date sanity (future-date clamp, reanchor)
+└── features/           # one folder per route
+    ├── landing/        # hub + empty state + recovery UI
+    ├── import/         # PDF pick → parse → review → commit
+    ├── manage/         # accounts, categories, rules, duplicates, backups
+    └── stats/          # the analytics dashboard
+samples/                # sample PDFs + sample-backup.json (see above)
 ```
 
-> **Note**: Dates are now in ISO 8601 format (`YYYY-MM-DD`). Explicit `year` and `month` fields are required for filtering.
+Everything uses the vanilla `(function () { 'use strict'; window.App = ... })();`
+pattern — no bundler, no transpiler, no ES modules. Script load order is
+fixed by `index.html` and documented in the comment above the script
+tags.
 
-##   Migration Tool
-If you have data in the old format (DD/MM/YY), use the included Python script to convert it:
+## Contributing
 
-```bash
-python tools/convert_data.py input_data.json -o new_data.json
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions around
+IIFE modules, the `App.*` global, adding a bank template, and running
+`node --check` before opening a PR.
 
-## 📄 PDF Converter Tool [NEW]
-If you have a Bank Leumi credit card statement in PDF format, you can convert it directly to the dashboard's JSON format.
+## License
 
-### Installation
-```bash
-pip install pdfplumber
-```
+MIT — see [LICENSE](LICENSE).
 
-### Usage
+## Disclaimer
 
-**Basic usage:**
-```bash
-python tools/pdf_to_json.py "path/to/your/statement.pdf" -o expenses.json
-```
-
-**Interactive mode** (categorize unknown merchants):
-```bash
-python tools/pdf_to_json.py "path/to/your/statement.pdf" -o expenses.json -i
-```
-
-The interactive mode (`-i` flag) will:
-1. Identify all uncategorized merchants
-2. Prompt you to select a category for each
-3. Ask for a keyword to match (defaults to full merchant name)
-4. Save the new rules to `category_rules.json` for future use
-
-### Features
-- **Automatic Categorization**: Matches merchants to categories using patterns in `tools/category_rules.json`.
-- **Interactive Categorization**: Quickly categorize unknown merchants and save rules for future PDFs.
-- **RTL Hebrew Support**: Correctly handles reversed Hebrew text from Bank Leumi statements.
-- **Auto-Month/Year**: Calculates month names and years from transaction dates.
-- **Installment Support**: Properly extracts installment transactions, recording the monthly payment amount.
-
-##  🛡️ Security
-- **XSS Protection**: Data rendering is sanitized to prevent Cross-Site Scripting attacks.
-- **SRI Check**: External libraries (Chart.js) are loaded with Subresource Integrity hashes.
-
-## 🔒 Privacy & Data Security
-
-**IMPORTANT:** This repository includes sample data only for demonstration purposes.
-
-**To use with your real data:**
-1. Clone/download this repository to your local computer
-2. Replace `expense_data.json` with your own data (keep it LOCAL only)
-3. Open `index.html` locally in your browser
-4. **NEVER commit or upload your real financial data to GitHub or any public repository**
-
-The `.gitignore` file is configured to help prevent accidentally committing private data files.
-
-## 🛠️ Built With
-
-- HTML5
-- CSS3 (with modern gradients and animations)
-- JavaScript (Vanilla)
-- [Chart.js](https://www.chartjs.org/) - For data visualization
-
-## 📝 License
-
-MIT License - Feel free to use and modify this dashboard for your personal or commercial projects.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-
-## 🤝 Contributing
-
-Feel free to fork this project and submit pull requests with improvements!
-
----
-
- | Not affiliated with any financial institution
+This is a personal tool, not a financial product. The parsers are
+best-effort pattern matching against real statements; always sanity-check
+the imported rows before using them for anything that matters. No
+warranty. No financial advice.
