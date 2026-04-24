@@ -101,20 +101,6 @@ The app is pure static HTML/JS — no build step, no server required.
 **Easiest:** open `index.html` in a browser. Chrome, Firefox, Safari,
 Edge all work.
 
-**Better (recommended for PDF imports):** serve the folder over HTTP.
-Some PDF.js code paths behave more reliably over `http://` than
-`file://`. Anything that serves a directory will do, for example:
-
-```sh
-# Python 3 (stdlib)
-python3 -m http.server 8000
-
-# Node (one-off, no install)
-npx serve .
-```
-
-Then visit `http://localhost:8000/`.
-
 ## Try it with sample data
 
 The `samples/` folder ships with everything you need to kick the tires
