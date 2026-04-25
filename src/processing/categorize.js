@@ -164,19 +164,35 @@
   // is preserved on `row.raw.bank_category` before we override it, so the
   // PDF's original categorisation stays accessible even when the system
   // chooses something different.
+  //
+  // Rows with `locked: true` are skipped entirely — they're rows the user
+  // has explicitly pinned, and the contract is that rules/history won't
+  // ever override them. (The lock can be cleared in Manage > Transactions
+  // to opt back into rule-based categorisation.)
   async function categorizeRows(rows, existingTransactions, resolver) {
     const rules = compile(await loadRules());
     const r = resolver || await loadResolver();
     const history = existingTransactions ? buildHistoryIndex(existingTransactions, r) : null;
+    // Pull the translator once; if the module isn't loaded (older bundles
+    // or unit tests) we fall through with a no-op so categorisation still
+    // works against whatever the template / CSV produced.
+    const T = (App.processing && App.processing.translate) || null;
+    const xlate = T ? T.translateCategory : (s) => s;
     rows.forEach(row => {
+      if (row && row.locked) return;
       // Snapshot the bank-provided category before we touch it, so the raw
       // value is always recoverable. We only set it when not already set —
       // some templates (like N26) populate raw.bank_category themselves.
-      const bankCat = (row.category && row.category !== 'Uncategorized') ? row.category : null;
-      if (bankCat) {
+      // The snapshot is always the *raw* (potentially non-English) value,
+      // so the user can audit what the bank originally said.
+      const bankCatRaw = (row.category && row.category !== 'Uncategorized') ? row.category : null;
+      if (bankCatRaw) {
         row.raw = row.raw || {};
-        if (!row.raw.bank_category) row.raw.bank_category = bankCat;
+        if (!row.raw.bank_category) row.raw.bank_category = bankCatRaw;
       }
+      // Translated fallback — what we'll store on the row if no rule /
+      // history hit. Existing English categories pass through unchanged.
+      const bankCat = bankCatRaw ? xlate(bankCatRaw) : null;
       const display = resolveDisplay(row, r);
       const ruleHit = categorize(display + ' ' + (row.description || ''), rules);
       if (ruleHit) { row.category = ruleHit; return; }
@@ -248,14 +264,17 @@
 
   // Re-run categorisation against ALL stored transactions. Returns the number
   // of rows whose category changed. Used by the "Apply rules to all" button
-  // in the Manage / Categorisation tab.
+  // in the Manage / Categorisation tab. Locked rows are skipped — the lock
+  // is the user's promise that rules will leave them alone.
   async function applyRulesToAll() {
     const rules = compile(await loadRules());
     const resolver = await loadResolver();
     const all = await App.storage.transactions.all();
     let changed = 0;
+    let skippedLocked = 0;
     const toSave = [];
     for (const row of all) {
+      if (row && row.locked) { skippedLocked++; continue; }
       const display = resolveDisplay(row, resolver);
       const hit = categorize(display + ' ' + (row.description || ''), rules);
       // If a rule matches, set the category; otherwise leave whatever was there.
@@ -269,7 +288,7 @@
       // Sequential puts — putMany assigns new ids, update keeps them.
       for (const row of toSave) await App.storage.transactions.update(row);
     }
-    return { changed, total: all.length };
+    return { changed, total: all.length, skippedLocked };
   }
 
   App.processing = App.processing || {};

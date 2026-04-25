@@ -6,7 +6,7 @@
 (function () {
   'use strict';
   const App = window.App = window.App || {};
-  const { el, escapeHtml, toast, downloadJSON, confirmAction, promptSelect, formatCurrency } = App.util;
+  const { el, escapeHtml, toast, downloadJSON, confirmAction, promptSelect, formatCurrency, monthName } = App.util;
 
   const TABS = [
     { id: 'accounts',     label: 'Accounts' },
@@ -25,7 +25,6 @@
   let txSearch = '';
   let txCategory = '';   // '' = any, '__uncat' = Uncategorized, else literal name
   let txAccount = '';    // '' = any, else stringified account id, '__none' = unassigned
-  let txMerchant = '';
   let txType = '';       // '' = any, else canonical vocabulary name
   let txLimit = 100;
   // Click-to-sort state. `key` is null when the user hasn't clicked a
@@ -54,6 +53,42 @@
       },
     }, label, ' ', el('span', { class: 'sort-arrow' }, arrow));
     return th;
+  }
+
+  // Resolve a transaction's source filename. Used by Manage > Transactions
+  // and Manage > Duplicates. The resolution chain:
+  //   1) `t.source_file` (set during commit on every new import) — exact
+  //   2) batch.files[] has exactly one entry — unambiguous, use its name
+  //   3) batch.files[] has multiple entries but only one whose `bank`
+  //      matches the row's account.bank — unambiguous, use that one
+  //   4) batch.source string (legacy / hand-rolled imports like the
+  //      sample backup, where files[] never existed) — best-effort label
+  //   5) '' — caller should render '—'
+  // Never returns the multi-file " · "-joined string the older helper
+  // produced; that was misleading because each row only came from ONE
+  // file in the batch, not all of them.
+  function resolveSourceFile(t, importsByBatch, accountById) {
+    if (!t) return '';
+    if (t.source_file) return t.source_file;
+    const batch = importsByBatch.get(t.import_batch_id);
+    if (!batch) return '';
+    const files = Array.isArray(batch.files) ? batch.files.filter(f => f && f.name) : [];
+    if (files.length === 1) return files[0].name;
+    if (files.length > 1) {
+      const acct = accountById && t.account_id != null ? accountById.get(t.account_id) : null;
+      const acctBank = acct && acct.bank ? String(acct.bank).toLowerCase() : '';
+      if (acctBank) {
+        const matches = files.filter(f => (f.bank || '').toLowerCase() === acctBank);
+        if (matches.length === 1) return matches[0].name;
+      }
+      // Multiple files in the batch and we can't disambiguate — return ''
+      // rather than dishonestly listing every filename.
+      return '';
+    }
+    // No files[] at all — fall back to the batch's `source` label
+    // (legacy hand-rolled imports + the sample backup use this shape).
+    if (batch.source) return batch.source;
+    return '';
   }
 
   // Case-insensitive compare of two values with stable null/undefined handling.
@@ -85,10 +120,8 @@
 
     rootEl.innerHTML = '';
     const wrap = el('div', { class: 'view view--manage' });
-    wrap.appendChild(el('div', { class: 'view-breadcrumb' },
-      el('button', { class: 'linklike', onclick: () => App.router.navigate('/') }, '← Home'),
-      el('span', null, '  /  Manage'),
-    ));
+    // Breadcrumb removed — the persistent top nav indicates the active
+    // section.
     wrap.appendChild(el('h1', null, 'Manage data'));
 
     const tabs = el('nav', { class: 'tabs' });
@@ -1406,14 +1439,29 @@
   }
 
   async function renderDuplicates(panel) {
-    const txs = await App.storage.transactions.all();
-    const accounts = await App.storage.accounts.all();
-    const ignores = await App.storage.duplicateIgnores.all();
+    const [txs, accounts, ignores, imports] = await Promise.all([
+      App.storage.transactions.all(),
+      App.storage.accounts.all(),
+      App.storage.duplicateIgnores.all(),
+      App.storage.imports.all().catch(() => []),
+    ]);
     const ignoredSet = new Set((ignores || []).map(i => i.signature).filter(Boolean));
     const accName = (id) => {
       const a = accounts.find(x => x.id === id);
       return a ? a.name : (id == null ? '—' : '#' + id);
     };
+    // Mirrors the helper in renderTransactions — see the long comment
+    // there for the resolution chain. Short version: per-row source_file
+    // wins; otherwise fall back through the batch's files[] (single file
+    // → unambiguous; multi-file → match by bank against the row's
+    // account); otherwise fall back to the batch's `source` label.
+    const importsByBatch = new Map();
+    (imports || []).forEach(b => { if (b && b.batch_id) importsByBatch.set(b.batch_id, b); });
+    const accountById = new Map();
+    (accounts || []).forEach(a => { if (a && a.id != null) accountById.set(a.id, a); });
+    function fileFor(t) {
+      return resolveSourceFile(t, importsByBatch, accountById);
+    }
     const allGroups = App.processing.duplicate.findDuplicatesWithin(txs);
     const groups = allGroups.filter(g => !ignoredSet.has(duplicateSignature(g)));
     const dismissedCount = allGroups.length - groups.length;
@@ -1440,7 +1488,7 @@
 
     if (!groups.length) {
       panel.appendChild(el('div', { class: 'empty-state' },
-        el('h3', null, '✅ No duplicates to review'),
+        el('h3', null, 'No duplicates to review'),
         el('p', null, dismissedCount
           ? 'The remaining groups are all marked OK.'
           : 'Nothing in your DB looks duplicated right now.')));
@@ -1480,10 +1528,15 @@
         el('th', null, 'Category'),
         el('th', null, 'Account'),
         el('th', { class: 'num' }, 'Amount'),
+        // Source filename column — surfaces which import each row came
+        // from so it's easy to see whether a "duplicate" pair is one
+        // statement loaded twice or two genuinely overlapping batches.
+        el('th', null, 'File'),
         el('th', null, ''),
       )));
       const tbody = el('tbody');
       g.rows.forEach((r) => {
+        const sourceFile = fileFor(r);
         tbody.appendChild(el('tr', null,
           el('td', null, r.date || ''),
           el('td', null, r.merchant || ''),
@@ -1491,6 +1544,8 @@
           el('td', null, accName(r.account_id)),
           el('td', { class: 'num' },
             (r.kind === 'expense' ? '−' : '+') + formatCurrency(r.amount, r.currency)),
+          el('td', { class: 'tx-file-cell muted', title: sourceFile || '' },
+            sourceFile || '—'),
           el('td', null, el('button', {
             type: 'button', class: 'btn btn--ghost btn--small',
             onclick: async () => {
@@ -1511,15 +1566,25 @@
 
   // ---------- Transactions ----------
   async function renderTransactions(panel) {
-    const [txs, accounts, merchantRows] = await Promise.all([
+    const [txs, accounts, merchantRows, imports] = await Promise.all([
       App.storage.transactions.all(),
       App.storage.accounts.all(),
       App.storage.merchants.all(),
+      App.storage.imports.all().catch(() => []),
     ]);
     const accName = (id) => {
       const a = accounts.find(x => x.id === id);
       return a ? a.name : (id == null ? '—' : '#' + id);
     };
+    // Resolve a transaction's source filename — see resolveSourceFile()
+    // for the resolution chain.
+    const importsByBatch = new Map();
+    (imports || []).forEach(b => { if (b && b.batch_id) importsByBatch.set(b.batch_id, b); });
+    const accountById = new Map();
+    (accounts || []).forEach(a => { if (a && a.id != null) accountById.set(a.id, a); });
+    function fileFor(t) {
+      return resolveSourceFile(t, importsByBatch, accountById);
+    }
     // Datalist feed for the bulk-category input.
     const knownCats = Array.from(new Set(txs
       .map(t => t.category)
@@ -1569,14 +1634,16 @@
     const selected = new Set();
 
     panel.appendChild(el('p', { class: 'muted' },
-      'Search by merchant, category, date, or amount. Combine the filters below to narrow by category, account, merchant, or transaction type. ' +
-      'The Display name column sets the pretty name we use in stats — editing one row updates every transaction with the same original. ' +
-      'Category, account, and type are editable inline on every row — pick from the dropdown to save instantly. ' +
-      'Select rows to bulk-edit category, account, display name, or transaction type. Bulk changes save as soon as you click Apply — no extra confirmation.'));
+      'Search hits every column — merchant, category, account, type, date, amount, notes, and source filename. ' +
+      'Use the filters below to narrow by category, account, or transaction type. ' +
+      'Date, display name, category, account, and type are editable inline on every row. ' +
+      'Select rows to bulk-edit; one Apply button writes every field you set, fields left blank are skipped. ' +
+      'The lock column pins a row so future rule sweeps and re-imports leave its category and display name alone — manual edits auto-lock the row.'));
 
     const searchRow = el('div', { class: 'tx-search-row' },
       el('input', {
-        type: 'text', value: txSearch, placeholder: 'Search merchant / category / date…',
+        type: 'text', value: txSearch,
+        placeholder: 'Search merchant, category, account, date, amount, notes, file…',
         class: 'tx-search',
         oninput: (e) => { txSearch = e.target.value; refreshTxList(); },
       }),
@@ -1584,8 +1651,11 @@
     );
     panel.appendChild(searchRow);
 
-    // Dedicated filter row: category / account / merchant (combined with
-    // the search box above — all filters AND together).
+    // Dedicated filter row: scoped pickers that the unified search can't
+    // express ergonomically (we don't want "Lidl" the merchant matching
+    // category "Groceries" by accident — these stay structured). The old
+    // free-text "Merchant contains…" input was retired now that the top
+    // search hits every field including the merchant.
     const distinctCats = Array.from(new Set(
       txs.map(t => t.category || 'Uncategorized').filter(Boolean)
     )).sort();
@@ -1613,12 +1683,6 @@
         selected: txAccount === String(a.id) ? '' : null,
       }, a.name + (a.currency ? ' (' + a.currency + ')' : ''))),
     );
-    const merchantInput = el('input', {
-      type: 'text', value: txMerchant,
-      class: 'tx-filter-input',
-      placeholder: 'Merchant contains…',
-      oninput: (e) => { txMerchant = e.target.value; refreshTxList(); },
-    });
     const typeSelect = el('select', {
       class: 'tx-filter-input',
       onchange: (e) => { txType = e.target.value; refreshTxList(); },
@@ -1633,14 +1697,12 @@
       categorySelect,
       accountSelect,
       typeSelect,
-      merchantInput,
       el('button', {
         type: 'button', class: 'btn btn--ghost btn--small',
         onclick: () => {
-          txCategory = ''; txAccount = ''; txMerchant = ''; txSearch = ''; txType = '';
+          txCategory = ''; txAccount = ''; txSearch = ''; txType = '';
           categorySelect.value = ''; accountSelect.value = '';
           typeSelect.value = '';
-          merchantInput.value = '';
           const srch = searchRow.querySelector('.tx-search');
           if (srch) srch.value = '';
           refreshTxList();
@@ -1649,10 +1711,21 @@
     );
     panel.appendChild(filterRow);
 
-    // Bulk toolbar: hidden when selection is empty. Category picker is a
-    // <select> over every known category, with a "+ New category…" sentinel
-    // that temporarily swaps it for a text input — the user wants
-    // dropdowns-first, typing-only as the escape hatch.
+    // ----- Bulk toolbar -----
+    //
+    // Five field inputs + ONE Apply button. The user fills in whichever
+    // fields they want to set; on Apply, we build a patch from non-empty
+    // values and write it to every selected row in a single pass. Empty
+    // fields are skipped so a "set just the category" workflow only
+    // touches `category`. The display-name input is special: it doesn't
+    // patch the transaction directly, it upserts a merchant-display rule
+    // for each affected `merchant` original — handled inside the same
+    // Apply click.
+    const bulkDateInput = el('input', {
+      type: 'date',
+      class: 'tx-bulk-input',
+      title: 'Set date for every selected row (blank = leave dates alone)',
+    });
     const bulkCategorySelect = el('select', { class: 'tx-bulk-input' },
       el('option', { value: '' }, 'Set category…'),
       ...knownCats.map(c => el('option', { value: c }, c)),
@@ -1665,37 +1738,26 @@
     const bulkCategoriesDatalist = el('datalist', { id: 'tx-bulk-categories' },
       ...knownCats.map(c => el('option', { value: c })));
     panel.appendChild(bulkCategoriesDatalist);
-    // When the user picks "+ New…", reveal the text input so they can name
-    // a fresh category; selecting anything else hides it again.
     bulkCategorySelect.addEventListener('change', () => {
       const isNew = bulkCategorySelect.value === '__new';
       bulkCategoryInput.classList.toggle('hidden', !isNew);
       if (isNew) { bulkCategoryInput.value = ''; bulkCategoryInput.focus(); }
     });
-    // Read the current pick — returns null if the user didn't commit to
-    // anything, a trimmed string if they picked a known cat or typed a new
-    // one.
     function readBulkCategory() {
       const v = bulkCategorySelect.value;
       if (v === '__new') return (bulkCategoryInput.value || '').trim() || null;
       return v ? v : null;
     }
-
     const bulkAccountSelect = el('select', { class: 'tx-bulk-input' },
       el('option', { value: '' }, 'Set account…'),
       ...accounts.map(a => el('option', { value: String(a.id) },
         a.name + (a.currency ? ' (' + a.currency + ')' : ''))),
     );
-
-    // Bulk display-name input: applies as a merchant-override keyed by the
-    // original string. When the selected rows span *different* originals we
-    // upsert an override for each — the user said "bulk edit should not
-    // show a popup", so we just do it and toast the result.
     const bulkDisplayInput = el('input', {
       type: 'text', class: 'tx-bulk-input',
-      placeholder: 'Set display name… (blank = revert to auto)',
+      placeholder: 'Set display name… (blank = no change)',
+      title: 'Saved as a merchant-display rule keyed by each row\'s original. Blank means "no change" — to revert a merchant to the auto-suggestion, edit the row inline and clear the field.',
     });
-
     const bulkTypeSelect = el('select', { class: 'tx-bulk-input' },
       el('option', { value: '' }, 'Set transaction type…'),
       ...TX_TYPES.map(t => el('option', { value: t }, t)),
@@ -1703,42 +1765,63 @@
 
     const bulkCountSpan = el('span', { class: 'muted tx-bulk-count' }, '0 selected');
 
+    // The single Apply button. Builds a patch from every input that has a
+    // value, applies it to every selected row in one pass, and (if a
+    // display name was set) upserts a merchant rule per distinct original
+    // among the selection. If nothing was set, we toast and bail.
+    const applyBulkBtn = el('button', {
+      type: 'button', class: 'btn btn--primary btn--small',
+      onclick: async () => {
+        const patch = {};
+        const cat = readBulkCategory();
+        if (cat) patch.category = cat;
+        if (bulkAccountSelect.value) {
+          const id = parseInt(bulkAccountSelect.value, 10);
+          patch.account_id = id;
+          const acct = accounts.find(a => a.id === id);
+          if (acct && acct.iban) patch.card = acct.iban.replace(/\s+/g, '').slice(-4);
+        }
+        if (bulkTypeSelect.value) patch.type = bulkTypeSelect.value;
+        if (bulkDateInput.value) {
+          const d = bulkDateInput.value; // YYYY-MM-DD per <input type="date">
+          patch.date = d;
+          const m = /^(\d{4})-(\d{2})/.exec(d);
+          if (m) {
+            patch.year  = parseInt(m[1], 10);
+            patch.month = monthName(parseInt(m[2], 10));
+          }
+        }
+        const newDisplay = (bulkDisplayInput.value || '').trim();
+        const hasAnyPatch = Object.keys(patch).length > 0;
+        const hasDisplay  = newDisplay.length > 0;
+        if (!hasAnyPatch && !hasDisplay) {
+          toast('Fill at least one field before applying.', 'warn');
+          return;
+        }
+        if (hasAnyPatch) await applyBulk(patch);
+        if (hasDisplay)  await applyBulkDisplay(newDisplay);
+        // Reset every input so the user doesn't re-apply by accident on
+        // the next click.
+        bulkDateInput.value = '';
+        bulkCategorySelect.value = '';
+        bulkCategoryInput.value = '';
+        bulkCategoryInput.classList.add('hidden');
+        bulkAccountSelect.value = '';
+        bulkTypeSelect.value = '';
+        bulkDisplayInput.value = '';
+      },
+    }, 'Apply');
+
     const bulkBar = el('div', { class: 'tx-bulk-bar hidden' },
       bulkCountSpan,
       el('span', { class: 'spacer' }, ''),
+      bulkDateInput,
       bulkCategorySelect,
       bulkCategoryInput,
-      el('button', {
-        type: 'button', class: 'btn btn--secondary btn--small',
-        onclick: () => applyBulk({ category: readBulkCategory() }),
-      }, 'Apply category'),
       bulkAccountSelect,
-      el('button', {
-        type: 'button', class: 'btn btn--secondary btn--small',
-        onclick: () => {
-          const val = bulkAccountSelect.value;
-          if (!val) { toast('Pick an account first.', 'warn'); return; }
-          const id = parseInt(val, 10);
-          const acct = accounts.find(a => a.id === id);
-          const patch = { account_id: id };
-          if (acct && acct.iban) patch.card = acct.iban.replace(/\s+/g, '').slice(-4);
-          applyBulk(patch);
-        },
-      }, 'Apply account'),
       bulkTypeSelect,
-      el('button', {
-        type: 'button', class: 'btn btn--secondary btn--small',
-        onclick: () => {
-          const val = bulkTypeSelect.value;
-          if (!val) { toast('Pick a transaction type first.', 'warn'); return; }
-          applyBulk({ type: val });
-        },
-      }, 'Apply type'),
       bulkDisplayInput,
-      el('button', {
-        type: 'button', class: 'btn btn--secondary btn--small',
-        onclick: () => applyBulkDisplay(bulkDisplayInput.value),
-      }, 'Apply display name'),
+      applyBulkBtn,
       el('button', {
         type: 'button', class: 'btn btn--ghost btn--small',
         onclick: () => { selected.clear(); refreshTxList(); },
@@ -1789,14 +1872,24 @@
         // the writes commit. Keyed by lowercase-trimmed display so two
         // capitalisation variants of the same brand dedupe into one rule.
         const learnKeys = new Map();
+        // Bulk category edit auto-locks the affected rows for the same
+        // reason a single-row edit does — the user explicitly chose this
+        // category, and rules shouldn't walk it back. We don't auto-lock
+        // for type / account-only patches; those aren't the rules engine's
+        // territory.
+        const shouldLock = patch.category != null;
         for (const id of ids) {
           const cur = await App.storage.transactions.get(id);
           if (!cur) continue;
-          const next = Object.assign({}, cur, patch);
-          await App.storage.transactions.put(next);
+          const merged = Object.assign({}, cur, patch);
+          if (shouldLock) merged.locked = true;
+          await App.storage.transactions.put(merged);
           // Keep local copy in sync so the list re-renders correctly.
           const local = txs.find(t => t.id === id);
-          if (local) Object.assign(local, patch);
+          if (local) {
+            Object.assign(local, patch);
+            if (shouldLock) local.locked = true;
+          }
           if (patch.category && patch.category !== 'Uncategorized') {
             const key = displayFor((cur.merchant || '').trim()) || (cur.merchant || '').trim();
             if (key) learnKeys.set(key.toLowerCase(), key);
@@ -1872,18 +1965,28 @@
 
     function refreshTxList() {
       const q = (txSearch || '').toLowerCase().trim();
-      const mq = (txMerchant || '').toLowerCase().trim();
       const catFilter = txCategory || '';
       const acctFilter = txAccount || '';
       const typeFilter = txType || '';
       const matches = txs.filter(t => {
         if (q) {
-          const hit =
-            (t.merchant || '').toLowerCase().includes(q) ||
-            (t.category || '').toLowerCase().includes(q) ||
-            (t.date || '').includes(q) ||
-            String(t.amount || '').includes(q);
-          if (!hit) return false;
+          // Unified search: hit every column the user can see plus the
+          // raw merchant + notes/description + source filename. Cheap
+          // string match — case-insensitive substring across the lot.
+          const merchantOriginal = (t.merchant || '');
+          const merchantDisplay  = displayFor(merchantOriginal.trim()) || merchantOriginal;
+          const haystack = [
+            merchantDisplay,
+            merchantOriginal,
+            t.category || 'Uncategorized',
+            accName(t.account_id),
+            typeOf(t),
+            t.date || '',
+            String(t.amount || ''),
+            t.description || '',
+            fileFor(t),
+          ].join('  ').toLowerCase();
+          if (!haystack.includes(q)) return false;
         }
         if (typeFilter && typeOf(t) !== typeFilter) return false;
         if (catFilter) {
@@ -1901,7 +2004,6 @@
             return false;
           }
         }
-        if (mq && !(t.merchant || '').toLowerCase().includes(mq)) return false;
         return true;
       });
       // Sort: user-chosen column when txSortKey is set, otherwise newest-first
@@ -1916,6 +2018,7 @@
           if (key === 'account')  return accName(t.account_id);
           if (key === 'type')     return typeOf(t) || '';
           if (key === 'amount')   return Math.abs(Number(t.amount) || 0);
+          if (key === 'file')     return fileFor(t) || '';
           return '';
         };
         const dir = txSortDir === 'desc' ? -1 : 1;
@@ -1981,6 +2084,13 @@
         sortableTh('Account',  'account',  getTxSort, setTxSort),
         sortableTh('Type',     'type',     getTxSort, setTxSort),
         amountTh,
+        // Source filename — shown in muted small text. Sortable so the
+        // user can group rows by which import they came from.
+        sortableTh('File',     'file',     getTxSort, setTxSort),
+        // Lock column: shows whether this row is pinned and ignored by
+        // category / display-name rules. Clicking toggles. Locks are auto-
+        // set when the user manually edits a row's category or display.
+        el('th', { class: 'tx-lock-col', title: 'Locked rows are not touched by category rules or merchant brand-collapses.' }, '🔒'),
         el('th', null, ''),
       )));
       const tbody = el('tbody');
@@ -2025,7 +2135,21 @@
             }
             try {
               await saveMerchantOverride(original, newVal);
-              toast(newVal ? 'Display name saved.' : 'Reverted to auto-suggestion.', 'success');
+              // Auto-lock this specific row so future rule sweeps don't
+              // walk back the manual choice. Siblings sharing the same
+              // original still pick up the new display via the merchant
+              // rule above; only this transaction is pinned.
+              if (r.id != null && !r.locked) {
+                try {
+                  const cur = await App.storage.transactions.get(r.id);
+                  if (cur) {
+                    const next = Object.assign({}, cur, { locked: true });
+                    await App.storage.transactions.put(next);
+                    r.locked = true;
+                  }
+                } catch (e) { /* non-fatal */ }
+              }
+              toast(newVal ? 'Display name saved (row locked).' : 'Reverted to auto-suggestion.', 'success');
               refreshTxList();
             } catch (err) {
               console.error(err);
@@ -2160,9 +2284,15 @@
           try {
             const cur = await App.storage.transactions.get(r.id);
             if (!cur) return;
-            const next = Object.assign({}, cur, { category: value || null });
+            // Manual edit auto-locks the row: the user just told us "this
+            // is the right category for this specific transaction", so
+            // future rule passes shouldn't yank it back. The user can
+            // un-lock from the lock column to opt back into rule-based
+            // categorisation.
+            const next = Object.assign({}, cur, { category: value || null, locked: true });
             await App.storage.transactions.put(next);
             r.category = value || null;
+            r.locked = true;
             // Auto-learn a rule keyed by the merchant's *display name* so
             // future imports of the same merchant pick up this categorisation
             // automatically. Silent on failure — it's a learning nicety, not
@@ -2173,7 +2303,9 @@
                 await App.processing.categorize.learnCategoryRule(learnKey, value);
               }
             } catch (e) { /* non-fatal */ }
-            toast('Category saved.', 'success');
+            toast('Category saved (row locked).', 'success');
+            // Re-render so the lock cell flips to the locked state.
+            refreshTxList();
           } catch (err) {
             console.error(err);
             toast('Save failed: ' + err.message, 'error');
@@ -2224,6 +2356,47 @@
           }, a.name + (a.currency ? ' (' + a.currency + ')' : ''))),
         );
 
+        // Per-row date input. Saves on `change` (i.e. blur or Enter), not
+        // on every keystroke, so the user can edit freely without
+        // half-finished YYYY-MM-DD strings hitting storage. Also recomputes
+        // the row's `year` / `month` so the Stats year-picker stays
+        // consistent without a reload.
+        const dateInput = el('input', {
+          type: 'date',
+          class: 'tx-date-input',
+          value: r.date || '',
+          disabled: r.id == null ? '' : null,
+          onchange: async (e) => {
+            const next = (e.target.value || '').trim();
+            if (!next || next === r.date) return;
+            const prev = r.date;
+            try {
+              const cur = await App.storage.transactions.get(r.id);
+              if (!cur) return;
+              const patch = { date: next };
+              const m = /^(\d{4})-(\d{2})/.exec(next);
+              if (m) {
+                patch.year  = parseInt(m[1], 10);
+                patch.month = monthName(parseInt(m[2], 10));
+              }
+              await App.storage.transactions.put(Object.assign({}, cur, patch));
+              Object.assign(r, patch);
+              toast('Date saved.', 'success');
+            } catch (err) {
+              console.error(err);
+              toast('Save failed: ' + err.message, 'error');
+              e.target.value = prev || '';
+            }
+          },
+        });
+
+        // Source filename cell — shown in muted small text. Click-to-copy
+        // would be nice but it's a lot of plumbing; for now, hover shows
+        // the full name as a tooltip.
+        const sourceFile = fileFor(r);
+        const fileTd = el('td', { class: 'tx-file-cell muted', title: sourceFile || '' },
+          sourceFile || '—');
+
         tbody.appendChild(el('tr', { class: checked ? 'tx-row--selected' : '' },
           el('td', { class: 'tx-checkbox-col' }, el('input', {
             type: 'checkbox',
@@ -2237,13 +2410,43 @@
               e.target.closest('tr').classList.toggle('tx-row--selected', e.target.checked);
             },
           })),
-          el('td', null, r.date || ''),
+          el('td', { class: 'tx-date-cell' }, dateInput),
           displayCell,
           categoryCell,
           el('td', null, accountSelectRow),
           el('td', null, typeSelectRow),
           el('td', { class: 'num' },
             (r.kind === 'expense' ? '−' : '+') + formatCurrency(r.amount, r.currency)),
+          fileTd,
+          el('td', { class: 'tx-lock-col' }, el('button', {
+            type: 'button',
+            class: 'lock-btn ' + (r.locked ? 'lock-btn--on' : 'lock-btn--off'),
+            disabled: r.id == null ? '' : null,
+            title: r.locked
+              ? 'Locked — rules will not change this row\'s category or display name. Click to unlock.'
+              : 'Unlocked — click to pin this row\'s current category and display name so rules leave it alone.',
+            onclick: async (e) => {
+              if (r.id == null) return;
+              const next = !r.locked;
+              try {
+                const cur = await App.storage.transactions.get(r.id);
+                if (!cur) return;
+                const patch = Object.assign({}, cur, { locked: next });
+                await App.storage.transactions.put(patch);
+                r.locked = next;
+                e.target.classList.toggle('lock-btn--on',  next);
+                e.target.classList.toggle('lock-btn--off', !next);
+                e.target.textContent = next ? '🔒' : '🔓';
+                e.target.title = next
+                  ? 'Locked — rules will not change this row\'s category or display name. Click to unlock.'
+                  : 'Unlocked — click to pin this row\'s current category and display name so rules leave it alone.';
+                toast(next ? 'Row locked.' : 'Row unlocked.', 'success');
+              } catch (err) {
+                console.error(err);
+                toast('Lock toggle failed: ' + err.message, 'error');
+              }
+            },
+          }, r.locked ? '🔒' : '🔓')),
           el('td', null, el('button', {
             type: 'button', class: 'btn btn--ghost btn--small',
             onclick: async () => {
@@ -2324,16 +2527,49 @@
   // ---------- Backup ----------
   async function renderBackup(panel) {
     panel.appendChild(el('p', { class: 'muted' },
-      'Everything is stored in your browser only. Export and re-import full backups, transactions only, or just rules / settings.'));
+      'Everything is stored in your browser only. Export and re-import full backups, transactions only, or just rules and settings.'));
+
+    // Tiny helpers so each section reads as "title + description + body"
+    // rather than thirty lines of DOM plumbing per section. Both compose
+    // the .section-card / .file-picker primitives from styles.css.
+    function sectionCard({ title, desc, body, danger }) {
+      const card = el('div', { class: 'section-card' + (danger ? ' section-card--danger' : '') });
+      if (title) card.appendChild(el('h3', { class: 'section-card__title' }, title));
+      if (desc)  card.appendChild(el('p',  { class: 'section-card__desc'  }, desc));
+      const bodyEl = el('div', { class: 'section-card__body' });
+      (Array.isArray(body) ? body : [body]).forEach(c => { if (c) bodyEl.appendChild(c); });
+      card.appendChild(bodyEl);
+      return card;
+    }
+    // Build a styled file picker. `inputId` is required so the visible
+    // <label> can associate with the hidden input. `replaceCheckbox` is
+    // optional — pass an actual <input type="checkbox"> + a label string
+    // if you want a "Replace existing X" toggle next to the picker.
+    function filePicker({ inputId, label, accept, onchange, replaceCheckbox, replaceLabel, hint }) {
+      const input = el('input', {
+        type: 'file', accept, id: inputId,
+        class: 'file-picker__input',
+        onchange,
+      });
+      const labelEl = el('label', {
+        class: 'file-picker__label', for: inputId,
+      }, label || 'Choose file…');
+      const wrap = el('div', { class: 'file-picker' }, input, labelEl);
+      if (replaceCheckbox) {
+        wrap.appendChild(el('label', { class: 'file-picker__opt' },
+          replaceCheckbox, ' ' + (replaceLabel || 'Replace existing')));
+      }
+      if (hint) wrap.appendChild(el('span', { class: 'file-picker__hint' }, hint));
+      // Expose the raw <input> on the wrapper so handlers can clear it
+      // after a successful import.
+      wrap.__input = input;
+      return wrap;
+    }
 
     // ===== Export =====
-    panel.appendChild(el('h3', { class: 'manage-section' }, 'Export'));
-
-    const exportBar = el('div', { class: 'rules-toolbar' });
-    // 1) Full backup — everything (transactions, accounts, categories,
-    //    rules, normalize_rules, imports, merchants).
-    exportBar.appendChild(el('button', {
-      type: 'button', class: 'btn btn--primary btn--small',
+    const exportActions = el('div', { class: 'section-card__actions' });
+    exportActions.appendChild(el('button', {
+      type: 'button', class: 'btn btn--primary',
       onclick: async () => {
         try {
           const dump = await App.storage.exportAll();
@@ -2343,9 +2579,8 @@
         } catch (e) { toast('Export failed: ' + e.message, 'error'); }
       },
     }, 'Export everything'));
-    // 2) Transactions only — for sharing data without leaking custom rules.
-    exportBar.appendChild(el('button', {
-      type: 'button', class: 'btn btn--secondary btn--small',
+    exportActions.appendChild(el('button', {
+      type: 'button', class: 'btn btn--secondary',
       onclick: async () => {
         try {
           const txs = await App.storage.transactions.all();
@@ -2360,9 +2595,8 @@
         } catch (e) { toast('Export failed: ' + e.message, 'error'); }
       },
     }, 'Export transactions only'));
-    // 3) Settings only — accounts, categories, both rule kinds. No txs.
-    exportBar.appendChild(el('button', {
-      type: 'button', class: 'btn btn--secondary btn--small',
+    exportActions.appendChild(el('button', {
+      type: 'button', class: 'btn btn--secondary',
       onclick: async () => {
         try {
           const [acc, cat, rul, brand, mer] = await Promise.all([
@@ -2387,10 +2621,8 @@
         } catch (e) { toast('Export failed: ' + e.message, 'error'); }
       },
     }, 'Export settings only'));
-    // 4) Rules only — both category_rules and normalize_rules. Used by the
-    //    Import rules button below to round-trip just the rule store.
-    exportBar.appendChild(el('button', {
-      type: 'button', class: 'btn btn--ghost btn--small',
+    exportActions.appendChild(el('button', {
+      type: 'button', class: 'btn btn--ghost',
       onclick: async () => {
         try {
           const [cat, brand, mer] = await Promise.all([
@@ -2411,109 +2643,69 @@
         } catch (e) { toast('Export failed: ' + e.message, 'error'); }
       },
     }, 'Export rules only'));
-    panel.appendChild(exportBar);
+    panel.appendChild(sectionCard({
+      title: 'Export',
+      desc: 'Download a JSON snapshot of your data. Full backups round-trip everything; the smaller exports let you share or migrate just one slice.',
+      body: exportActions,
+    }));
 
-    // ===== Import rules =====
-    // Accepts the `kalkala-rules` shape produced by "Export rules only",
-    // OR a full backup whose `data` block carries category_rules /
-    // normalize_rules / merchants. Append-only by default — existing rules
-    // are kept and ids are stripped so the import doesn't collide with
-    // local rows. The "Replace rules" toggle wipes the rule stores first.
-    panel.appendChild(el('h3', { class: 'manage-section' }, 'Import rules'));
-    panel.appendChild(el('p', { class: 'muted' },
-      'Load a rules JSON exported from another Kalkala instance. By default rules are appended; ' +
-      'tick "Replace existing rules" to wipe category and display rules first.'));
-    const replaceRulesChk = el('input', { type: 'checkbox' });
-    const rulesInput = el('input', {
-      type: 'file', accept: '.json,application/json',
+    // ===== Import everything (full backup) =====
+    // Listed first because it's the most common reason to land on this tab.
+    // Accepts the full exportAll() shape and writes every store. "Replace
+    // existing data" wipes the whole DB first — including transactions.
+    const replaceChk = el('input', { type: 'checkbox' });
+    let everythingPicker;
+    everythingPicker = filePicker({
+      inputId: 'backup-import-all',
+      label: 'Choose backup file…',
+      accept: '.json,application/json',
+      replaceCheckbox: replaceChk,
+      replaceLabel: 'Replace existing data',
       onchange: async (e) => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         try {
           const text = await f.text();
           const json = JSON.parse(text);
-          // Accept both the rules-only shape and a full-backup shape.
-          const cat   = (json && (json.category_rules   || (json.data && json.data.category_rules)))   || [];
-          const brand = (json && (json.brand_collapses  || (json.data && json.data.normalize_rules)))  || [];
-          const mer   = (json && (json.merchant_overrides || (json.data && json.data.merchants)))      || [];
-          if (!cat.length && !brand.length && !mer.length) {
-            toast('No rules found in that file.', 'warn');
-            return;
-          }
-          if (replaceRulesChk.checked) {
-            const ok = await confirmAction(
-              'Wipe ALL existing category rules and display-name rules before importing?\n\n' +
-              'This cannot be undone.');
+          if (replaceChk.checked) {
+            const ok = await confirmAction('Really wipe the current DB and restore from this backup?');
             if (!ok) return;
-            const existingCat   = await App.storage.rules.all();
-            const existingBrand = await App.storage.normalizeRules.all().catch(() => []);
-            const existingMer   = await App.storage.merchants.all().catch(() => []);
-            for (const r of existingCat)   await App.storage.rules.delete(r.id);
-            for (const r of existingBrand) await App.storage.normalizeRules.delete(r.id);
-            for (const r of existingMer)   await App.storage.merchants.delete(r.id);
           }
-          // Strip ids so we don't clobber local rows. Keep everything else.
-          const stripId = (r) => { const c = Object.assign({}, r); delete c.id; return c; };
-          for (const r of cat)   await App.storage.rules.put(stripId(r));
-          for (const r of brand) await App.storage.normalizeRules.put(stripId(r));
-          // Merchants get migrated into normalize_rules at next boot, but
-          // import them so the migration has something to act on if the
-          // donor instance was on an older schema.
-          for (const r of mer)   await App.storage.merchants.put(stripId(r));
-          // Reload the brand-collapse cache so the new rules are visible
-          // immediately without a page reload.
-          const N = (App.processing && App.processing.normalize) || {};
-          if (N.loadBrandCollapses) await N.loadBrandCollapses();
-          if (N.migrateMerchantsToRulesIfNeeded) await N.migrateMerchantsToRulesIfNeeded();
-          toast('Imported ' + cat.length + ' category rule' + (cat.length === 1 ? '' : 's') +
-                ', ' + brand.length + ' display rule' + (brand.length === 1 ? '' : 's') +
-                (mer.length ? ' and ' + mer.length + ' legacy merchant override' + (mer.length === 1 ? '' : 's') : '') +
-                '.', 'success');
-          rulesInput.value = '';
+          const counts = await App.storage.importAll(json, { replace: replaceChk.checked });
+          toast('Restored: ' + counts.transactions + ' transactions, ' + counts.accounts + ' accounts.', 'success');
           render();
-        } catch (err) { toast('Import failed: ' + err.message, 'error'); }
+        } catch (err) { toast('Restore failed: ' + err.message, 'error'); }
       },
     });
-    panel.appendChild(el('label', { class: 'inline-label' }, replaceRulesChk, ' Replace existing rules'));
-    panel.appendChild(rulesInput);
+    panel.appendChild(sectionCard({
+      title: 'Import everything',
+      desc: 'Load a full-backup JSON file. By default rows are appended; tick "Replace existing data" to wipe every store first (transactions and settings both).',
+      body: everythingPicker,
+    }));
 
-    // ===== Import transactions =====
-    // Accepts either the `subset: 'transactions'` shape produced by "Export
+    // ===== Import transactions only =====
+    // Accepts either the `subset: 'transactions'` shape from "Export
     // transactions only", OR a full backup whose `data.transactions` array
-    // we'll cherry-pick from. Other tables in the file are intentionally
-    // ignored — that's the whole point of "transactions only" import.
-    //
-    // Append-only by default (ids stripped so PUTs don't clobber local rows
-    // and existing transactions stay intact). The "Replace existing
-    // transactions" toggle wipes only the `transactions` store; accounts,
-    // categories, rules, and display-name rules are left alone — that's the
-    // difference vs. Restore backup below, which can wipe the whole DB.
-    panel.appendChild(el('h3', { class: 'manage-section' }, 'Import transactions'));
-    panel.appendChild(el('p', { class: 'muted' },
-      'Load transactions from a Kalkala JSON file. Accepts a transactions-only export or a full backup ' +
-      '(only the transactions are imported either way). By default rows are appended; ' +
-      'tick "Replace existing transactions" to wipe the transactions store first ' +
-      '(your accounts, categories, and rules are left alone).'));
+    // we cherry-pick from. Append-only by default; the toggle wipes only the
+    // transactions store, leaving accounts / categories / rules alone.
     const replaceTxChk = el('input', { type: 'checkbox' });
-    const txInput = el('input', {
-      type: 'file', accept: '.json,application/json',
+    const txPicker = filePicker({
+      inputId: 'backup-import-tx',
+      label: 'Choose transactions file…',
+      accept: '.json,application/json',
+      replaceCheckbox: replaceTxChk,
+      replaceLabel: 'Replace existing transactions',
       onchange: async (e) => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         try {
           const text = await f.text();
           const json = JSON.parse(text);
-          // Accept both shapes: top-level `transactions` (legacy / hand-rolled)
-          // and the canonical `data.transactions` produced by exportAll +
-          // "Export transactions only".
           const txs =
             (json && json.data && Array.isArray(json.data.transactions) && json.data.transactions) ||
             (json && Array.isArray(json.transactions) && json.transactions) ||
             [];
-          if (!txs.length) {
-            toast('No transactions found in that file.', 'warn');
-            return;
-          }
+          if (!txs.length) { toast('No transactions found in that file.', 'warn'); return; }
           if (replaceTxChk.checked) {
             const existing = await App.storage.transactions.all();
             const ok = await confirmAction(
@@ -2524,44 +2716,39 @@
             if (!ok) return;
             await App.storage.transactions.clear();
           }
-          // Strip ids on append so we don't collide with existing rows.
           const stripId = (r) => { const c = Object.assign({}, r); delete c.id; return c; };
           for (const t of txs) {
             await App.storage.transactions.put(replaceTxChk.checked ? t : stripId(t));
           }
           toast('Imported ' + txs.length + ' transaction' + (txs.length === 1 ? '' : 's') + '.', 'success');
-          txInput.value = '';
+          txPicker.__input.value = '';
           render();
         } catch (err) { toast('Import failed: ' + err.message, 'error'); }
       },
     });
-    panel.appendChild(el('label', { class: 'inline-label' }, replaceTxChk, ' Replace existing transactions'));
-    panel.appendChild(txInput);
+    panel.appendChild(sectionCard({
+      title: 'Import transactions only',
+      desc: 'Load transactions from a Kalkala JSON file. Accepts a transactions-only export or a full backup (only the transactions are imported either way). Tick the toggle to wipe the transactions store first; your accounts, categories, and rules are left alone.',
+      body: txPicker,
+    }));
 
     // ===== Import settings only =====
-    // Counterpart to "Export settings only". Accepts the `subset: 'settings'`
-    // shape OR a full backup (pulls only the settings stores: accounts,
-    // categories, category_rules, normalize_rules, merchants). Transactions
-    // are never touched by this import — that's the whole point. Append-only
-    // by default; "Replace existing settings" wipes each settings store
-    // before writing, but still leaves transactions alone.
-    panel.appendChild(el('h3', { class: 'manage-section' }, 'Import settings only'));
-    panel.appendChild(el('p', { class: 'muted' },
-      'Load accounts, categories, and all rules from a Kalkala settings export (or a full backup — only the settings are imported). ' +
-      'By default rows are appended; tick "Replace existing settings" to wipe the settings stores first ' +
-      '(your transactions are left alone).'));
+    // Counterpart to "Export settings only". Pulls accounts, categories,
+    // both rule kinds, and merchants from a settings-subset export OR a full
+    // backup. Transactions are never touched by this path.
     const replaceSettingsChk = el('input', { type: 'checkbox' });
-    const settingsInput = el('input', {
-      type: 'file', accept: '.json,application/json',
+    const settingsPicker = filePicker({
+      inputId: 'backup-import-settings',
+      label: 'Choose settings file…',
+      accept: '.json,application/json',
+      replaceCheckbox: replaceSettingsChk,
+      replaceLabel: 'Replace existing settings',
       onchange: async (e) => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         try {
           const text = await f.text();
           const json = JSON.parse(text);
-          // Accept both shapes: the canonical settings-subset export carries
-          // the five arrays under json.data, but a full backup has them in
-          // the same spot — pluck whichever is present.
           const src = (json && json.data) || {};
           const acc   = Array.isArray(src.accounts)        ? src.accounts        : [];
           const cat   = Array.isArray(src.categories)      ? src.categories      : [];
@@ -2590,16 +2777,12 @@
             for (const r of ebrand) await App.storage.normalizeRules.delete(r.id);
             for (const r of emer)   await App.storage.merchants.delete(r.id);
           }
-          // Strip ids so PUTs don't collide with local rows. Note: wiping the
-          // `accounts` store orphans any transaction account_id pointers —
-          // that's the user's explicit choice when ticking "Replace".
           const stripId = (r) => { const c = Object.assign({}, r); delete c.id; return c; };
           for (const r of acc)   await App.storage.accounts.put(stripId(r));
           for (const r of cat)   await App.storage.categories.put(stripId(r));
           for (const r of rul)   await App.storage.rules.put(stripId(r));
           for (const r of brand) await App.storage.normalizeRules.put(stripId(r));
           for (const r of mer)   await App.storage.merchants.put(stripId(r));
-          // Re-warm caches so rule changes take effect without reload.
           const N = (App.processing && App.processing.normalize) || {};
           if (N.loadBrandCollapses) await N.loadBrandCollapses();
           if (N.migrateMerchantsToRulesIfNeeded) await N.migrateMerchantsToRulesIfNeeded();
@@ -2611,70 +2794,118 @@
                 ', '  + brand.length + ' display rule' + (brand.length === 1 ? '' : 's') +
                 (mer.length ? ', ' + mer.length + ' legacy override' + (mer.length === 1 ? '' : 's') : '') +
                 ').', 'success');
-          settingsInput.value = '';
+          settingsPicker.__input.value = '';
           render();
         } catch (err) { toast('Import failed: ' + err.message, 'error'); }
       },
     });
-    panel.appendChild(el('label', { class: 'inline-label' }, replaceSettingsChk, ' Replace existing settings'));
-    panel.appendChild(settingsInput);
+    panel.appendChild(sectionCard({
+      title: 'Import settings only',
+      desc: 'Load accounts, categories, and all rules from a Kalkala settings export (or a full backup — only the settings are imported). Tick the toggle to wipe the settings stores first; your transactions are left alone.',
+      body: settingsPicker,
+    }));
 
-    // ===== Import everything (full backup) =====
-    // Counterpart to "Export everything". Accepts the full exportAll() shape
-    // and writes every store. "Replace existing data" wipes the whole DB
-    // first — including transactions — so use with care.
-    panel.appendChild(el('h3', { class: 'manage-section' }, 'Import everything'));
-    panel.appendChild(el('p', { class: 'muted' },
-      'Choose a full-backup JSON file to load. By default rows are appended; ' +
-      'tick "Replace existing data" to wipe every store first (transactions and settings both).'));
-    const replaceChk = el('input', { type: 'checkbox' });
-    const input = el('input', {
-      type: 'file', accept: '.json,application/json',
+    // ===== Import rules only =====
+    // Accepts the `kalkala-rules` shape from "Export rules only", OR a full
+    // backup whose `data` block carries category_rules / normalize_rules /
+    // merchants. Append-only by default; toggle wipes the rule stores first.
+    const replaceRulesChk = el('input', { type: 'checkbox' });
+    const rulesPicker = filePicker({
+      inputId: 'backup-import-rules',
+      label: 'Choose rules file…',
+      accept: '.json,application/json',
+      replaceCheckbox: replaceRulesChk,
+      replaceLabel: 'Replace existing rules',
       onchange: async (e) => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         try {
           const text = await f.text();
           const json = JSON.parse(text);
-          if (replaceChk.checked) {
-            const ok = await confirmAction('Really wipe the current DB and restore from this backup?');
-            if (!ok) return;
+          const cat   = (json && (json.category_rules     || (json.data && json.data.category_rules)))   || [];
+          const brand = (json && (json.brand_collapses    || (json.data && json.data.normalize_rules)))  || [];
+          const mer   = (json && (json.merchant_overrides || (json.data && json.data.merchants)))        || [];
+          if (!cat.length && !brand.length && !mer.length) {
+            toast('No rules found in that file.', 'warn');
+            return;
           }
-          const counts = await App.storage.importAll(json, { replace: replaceChk.checked });
-          toast('Restored: ' + counts.transactions + ' transactions, ' + counts.accounts + ' accounts.', 'success');
+          if (replaceRulesChk.checked) {
+            const ok = await confirmAction(
+              'Wipe ALL existing category rules and display-name rules before importing?\n\n' +
+              'This cannot be undone.');
+            if (!ok) return;
+            const existingCat   = await App.storage.rules.all();
+            const existingBrand = await App.storage.normalizeRules.all().catch(() => []);
+            const existingMer   = await App.storage.merchants.all().catch(() => []);
+            for (const r of existingCat)   await App.storage.rules.delete(r.id);
+            for (const r of existingBrand) await App.storage.normalizeRules.delete(r.id);
+            for (const r of existingMer)   await App.storage.merchants.delete(r.id);
+          }
+          const stripId = (r) => { const c = Object.assign({}, r); delete c.id; return c; };
+          for (const r of cat)   await App.storage.rules.put(stripId(r));
+          for (const r of brand) await App.storage.normalizeRules.put(stripId(r));
+          for (const r of mer)   await App.storage.merchants.put(stripId(r));
+          const N = (App.processing && App.processing.normalize) || {};
+          if (N.loadBrandCollapses) await N.loadBrandCollapses();
+          if (N.migrateMerchantsToRulesIfNeeded) await N.migrateMerchantsToRulesIfNeeded();
+          toast('Imported ' + cat.length + ' category rule' + (cat.length === 1 ? '' : 's') +
+                ', ' + brand.length + ' display rule' + (brand.length === 1 ? '' : 's') +
+                (mer.length ? ' and ' + mer.length + ' legacy merchant override' + (mer.length === 1 ? '' : 's') : '') +
+                '.', 'success');
+          rulesPicker.__input.value = '';
           render();
-        } catch (err) { toast('Restore failed: ' + err.message, 'error'); }
+        } catch (err) { toast('Import failed: ' + err.message, 'error'); }
       },
     });
-    panel.appendChild(el('label', { class: 'inline-label' }, replaceChk, ' Replace existing data'));
-    panel.appendChild(input);
+    panel.appendChild(sectionCard({
+      title: 'Import rules only',
+      desc: 'Load a rules JSON exported from another Kalkala instance. Tick the toggle to wipe category and display rules first.',
+      body: rulesPicker,
+    }));
   }
 
   // ---------- Danger zone ----------
   async function renderDanger(panel) {
     panel.appendChild(el('p', { class: 'muted' },
-      'Irreversible actions. None of this touches the network, but it cannot be undone either.'));
+      'Irreversible actions. None of this touches the network, but it cannot be undone either. ' +
+      'Each operation is wrapped in a confirmation dialog — but the result is permanent. ' +
+      'If in doubt, export a backup first from the Backup / restore tab.'));
 
-    panel.appendChild(el('button', {
-      type: 'button', class: 'btn btn--danger',
-      onclick: async () => {
+    function dangerCard({ title, desc, action, label }) {
+      const btn = el('button', { type: 'button', class: 'btn btn--danger', onclick: action }, label);
+      const card = el('div', { class: 'section-card section-card--danger' },
+        el('h3', { class: 'section-card__title' }, title),
+        el('p',  { class: 'section-card__desc'  }, desc),
+        el('div', { class: 'section-card__actions' }, btn),
+      );
+      return card;
+    }
+
+    panel.appendChild(dangerCard({
+      title: 'Delete all transactions',
+      desc: 'Removes every imported transaction. Accounts, categories, rules, merchant display-name rules, and import history are kept.',
+      label: 'Delete all transactions',
+      action: async () => {
         const tr = await App.storage.transactions.all();
         const ok = await confirmAction('Really delete all ' + tr.length + ' transactions? Accounts and rules will be kept.');
         if (!ok) return;
         await App.storage.transactions.clear();
         toast('All transactions cleared.', 'success');
       },
-    }, 'Delete all transactions'));
-    panel.appendChild(el('button', {
-      type: 'button', class: 'btn btn--danger',
-      onclick: async () => {
+    }));
+
+    panel.appendChild(dangerCard({
+      title: 'Wipe entire database',
+      desc: 'Removes everything: transactions, accounts, categories, both rule kinds, merchants, import history, duplicate dismissals, and saved CSV templates. The browser tab returns to the empty-state landing page.',
+      label: 'Wipe entire database',
+      action: async () => {
         const ok = await confirmAction('This wipes transactions, accounts, rules, categories, and import history. Continue?');
         if (!ok) return;
         await App.storage.clearAll();
         toast('Database wiped.', 'success');
         App.router.navigate('/');
       },
-    }, 'Wipe entire database'));
+    }));
   }
 
   App.views = App.views || {};

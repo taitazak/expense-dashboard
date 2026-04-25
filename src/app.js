@@ -135,7 +135,7 @@
     const reload = document.createElement('button');
     reload.type = 'button';
     reload.className = 'btn';
-    reload.textContent = '↻ Reload page';
+    reload.textContent = 'Reload page';
     reload.addEventListener('click', () => location.reload());
 
     const reset = document.createElement('button');

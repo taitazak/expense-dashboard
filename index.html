@@ -17,11 +17,24 @@
 </head>
 <body>
   <div class="dashboard">
-    <div class="header">
-      <button id="themeToggle" class="theme-toggle" title="Toggle Dark Mode">🌙</button>
-      <h1>💳 Personal Expense Dashboard</h1>
+    <header class="header">
+      <button id="themeToggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+      <h1>Personal Expenses Dashboard</h1>
       <p>Track and analyze your spending patterns — everything stays on your machine.</p>
-    </div>
+    </header>
+
+    <!--
+      Persistent top nav. Active state is driven by body[data-route="..."]
+      which the router sets on every navigate, so this stays in sync without
+      JS handlers here. Each link is a hash anchor so the back button works
+      naturally.
+    -->
+    <nav class="topnav" aria-label="Primary">
+      <a href="#/"        class="topnav__link" data-route="landing">Home</a>
+      <a href="#/import"  class="topnav__link" data-route="import">Import</a>
+      <a href="#/stats"   class="topnav__link" data-route="stats">Stats</a>
+      <a href="#/manage"  class="topnav__link" data-route="manage">Manage</a>
+    </nav>
 
     <!-- Mounted views render here. -->
     <main id="view"></main>
@@ -52,11 +65,13 @@
   <script src="src/templates/ing.js"></script>
   <script src="src/templates/activo.js"></script>
 
+  <script src="src/processing/translate.js"></script>
   <script src="src/processing/categorize.js"></script>
   <script src="src/processing/duplicate.js"></script>
   <script src="src/processing/transfer.js"></script>
   <script src="src/processing/normalize.js"></script>
   <script src="src/processing/dates.js"></script>
+  <script src="src/processing/csv.js"></script>
 
   <script src="src/features/landing/landing.js"></script>
   <script src="src/features/import/import.js"></script>
