@@ -14,20 +14,20 @@
     {
       id: 'import', route: '/import',
       icon: '📥', title: 'Import data',
-      blurb: 'Pick PDF bank statements and turn them into rows in your local table.',
+      blurb: 'Drop PDF statements or CSV exports and turn them into rows in your local table.',
       action: 'Start import',
     },
     {
       id: 'manage', route: '/manage',
-      icon: '🛠️', title: 'Manage data',
-      blurb: 'Accounts, categorisation rules, merchant display names, import history, and JSON backup / restore.',
+      icon: '🗂️', title: 'Manage data',
+      blurb: 'Accounts, categorisation rules, merchant display names, import history, and JSON backup or restore.',
       action: 'Open manager',
     },
     {
       id: 'stats', route: '/stats',
-      icon: '📊', title: 'See stats',
-      blurb: 'The original dashboard — charts, filters, monthly totals.',
-      action: 'View dashboard',
+      icon: '📈', title: 'View stats',
+      blurb: 'Charts, filters, monthly totals, and an editable list of recent transactions.',
+      action: 'Open dashboard',
     },
   ];
 
@@ -170,7 +170,7 @@
       try { localStorage.removeItem('kalkala.future_dates_migrated.v1'); } catch (_) { /* ignore */ }
       location.reload();
     } catch (e) {
-      if (btn) { btn.disabled = false; btn.textContent = '⚠ Reset local data and reload'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Reset local data and reload'; }
       window.alert('Reset failed: ' + (e && e.message ? e.message : String(e)));
     }
   }
@@ -229,7 +229,7 @@
           btn.disabled = false; btn.textContent = original;
         }
       },
-    }, '🔎 Show diagnostics');
+    }, 'Show diagnostics');
 
     return el('details', {
       class: 'manual-recovery',
@@ -290,24 +290,24 @@
         type: 'button',
         class: 'btn btn--small',
         onclick: (e) => exportLocalData(e.currentTarget),
-      }, '⬇ Export local data');
+      }, 'Export local data');
       const repairBtn = el('button', {
         type: 'button',
         class: 'btn btn--small btn--primary',
         onclick: (e) => repairLocalData(e.currentTarget),
-      }, '🔧 Try to repair');
+      }, 'Try to repair');
       const resetBtn = el('button', {
         type: 'button',
         class: 'btn btn--small btn--danger',
         onclick: (e) => resetLocalData(e.currentTarget),
-      }, '⚠ Reset local data and reload');
+      }, 'Reset local data and reload');
       const actions = el('div', {
         class: 'recovery-actions',
         style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' },
       }, exportBtn, repairBtn, resetBtn);
       return el('div', { class: 'status-strip status-strip--muted' },
         el('div', null,
-          el('strong', null, '⚠️ Local database is unavailable.'),
+          el('strong', null, 'Local database is unavailable.'),
           ' ',
           el('span', null, 'The app cannot read or write data on this profile.'),
         ),
@@ -362,8 +362,8 @@
     const wrap = el('div', { class: 'view view--landing' });
     wrap.appendChild(el('div', { class: 'landing-intro' },
       el('h1', null, 'What would you like to do?'),
-      el('p',  { class: 'muted' },
-        'Everything stays on your machine. Imports run locally in the browser — no servers, no uploads.'),
+      el('p',  null,
+        'Everything stays on your machine. Imports run locally in the browser — no servers, no uploads, no accounts.'),
     ));
     const strip = el('div', { class: 'landing-status' }, 'Loading…');
     wrap.appendChild(strip);

@@ -30,7 +30,10 @@
   //     collapse noisy variants of the same merchant in stats.
   // v4: added `normalize_rules` store — persisted brand-collapse regexes for
   //     the merchant beautifier so users can audit/edit them in Manage.
-  const DB_VERSION = 4;
+  // v5: added `csv_templates` store — saved CSV column mappings so users
+  //     can re-import statements from non-PDF sources without re-doing the
+  //     "this column is the date, this one is the amount" mapping every time.
+  const DB_VERSION = 5;
 
   const STORES = {
     transactions: { keyPath: 'id', autoIncrement: true,
@@ -59,6 +62,14 @@
     // The store is seeded on first boot from the hardcoded defaults in
     // normalize.js; user edits flip `source` to 'manual'.
     normalize_rules: { keyPath: 'id', autoIncrement: true, indexes: [] },
+    // Saved CSV column mappings. Each row:
+    //   { id, name, delimiter, has_header, date_format, sign_convention,
+    //     amount_decimal, columns: { date, amount, merchant, category,
+    //     account, notes }, updated_at }
+    // `columns` values are zero-based column indices into the parsed row.
+    // `null` means "not present in the CSV". Used by the Import flow's
+    // CSV path so re-imports from the same source skip the mapping step.
+    csv_templates: { keyPath: 'id', autoIncrement: true, indexes: [] },
   };
 
   let _db = null;
@@ -424,7 +435,7 @@
   }
 
   async function exportAll() {
-    const [tr, acc, cat, rul, imp, mer, nrm] = await Promise.all([
+    const [tr, acc, cat, rul, imp, mer, nrm, csv] = await Promise.all([
       getAll('transactions'),
       getAll('accounts'),
       getAll('categories'),
@@ -432,13 +443,14 @@
       getAll('imports'),
       getAll('merchants').catch(() => []),
       getAll('normalize_rules').catch(() => []),
+      getAll('csv_templates').catch(() => []),
     ]);
     return {
       schema: { name: 'kalkala-expense-dashboard', version: DB_VERSION },
       exported_at: new Date().toISOString(),
       data: { transactions: tr, accounts: acc, categories: cat,
               category_rules: rul, imports: imp, merchants: mer,
-              normalize_rules: nrm },
+              normalize_rules: nrm, csv_templates: csv },
     };
   }
 
@@ -454,6 +466,7 @@
     if (d.transactions)    await putMany('transactions', stripIds(d.transactions, opts.replace));
     if (d.merchants)       await putMany('merchants', stripIds(d.merchants, opts.replace));
     if (d.normalize_rules) await putMany('normalize_rules', stripIds(d.normalize_rules, opts.replace));
+    if (d.csv_templates)   await putMany('csv_templates', stripIds(d.csv_templates, opts.replace));
     return {
       transactions:    (d.transactions || []).length,
       accounts:        (d.accounts || []).length,
@@ -462,6 +475,7 @@
       imports:         (d.imports || []).length,
       merchants:       (d.merchants || []).length,
       normalize_rules: (d.normalize_rules || []).length,
+      csv_templates:   (d.csv_templates || []).length,
     };
   }
 
@@ -498,6 +512,7 @@
     duplicateIgnores: simpleCRUD('duplicate_ignores'),
     merchants,
     normalizeRules: simpleCRUD('normalize_rules'),
+    csvTemplates: simpleCRUD('csv_templates'),
     exportAll,
     importAll,
     clearAll,

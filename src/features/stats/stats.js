@@ -31,16 +31,23 @@
   // editable display-name column in Recent Transactions to upsert
   // overrides without re-reading the whole store on every keystroke.
   let merchantOverridesByOriginal = new Map();
-  // Income categories are excluded from charts/cards/lists by default — the
-  // user explicitly asked for stats to mirror the landing-page behaviour.
-  // The toggle lives on the controls bar and flips this flag.
-  //
-  // Gating is by *category*, not by row sign: a refund booked under (say)
-  // "Groceries" stays visible even when income is hidden, because only
-  // rows whose category is flagged `is_income` in Manage > Categories get
-  // filtered out.
-  let includeIncome = false;
+  // Categories the user has flagged as Income in Manage > Categories.
+  // No longer gated by a separate toggle — the multi-select picker now
+  // owns include/exclude, and income categories are seeded as unchecked
+  // by default (same as ones flagged Excluded). The user can re-include
+  // them per-session by ticking them in the picker.
   let incomeCategoryNames = new Set();
+  // Per-category include/exclude filter — distinct from the back-end
+  // "excluded" flag in Manage > Categories. Manage's flag seeds the default
+  // (categories flagged excluded start unchecked); the picker then lets the
+  // user toggle individual categories in or out for the current session.
+  // Resets on each mount; not persisted.
+  //   includedCategories === null  → "All categories" (the default before
+  //                                  the user touches the picker)
+  //   includedCategories === Set   → only show rows whose category is in
+  //                                  the set (Uncategorized maps to '')
+  let includedCategories = null;       // null until populateFilters() seeds it
+  let allCategoryChoices = [];         // [{name, excludedByDefault}]
   // Recent Transactions: null key = default (newest-first by date). Once
   // the user clicks a header we track their chosen column + direction.
   let recentSortKey = null;
@@ -132,18 +139,18 @@
     const stored = await App.storage.transactions.all();
     if (!stored.length) return [];
     // Build a set of categories the user has flagged as excluded (e.g.
-    // internal transfers between their own accounts). These don't show
-    // up in totals, but can still be browsed in the Manage view.
-    // While we're reading the categories store, also snapshot which
-    // categories are flagged as income — applyFilters uses that set to
-    // hide income rows unless the "Include income categories" toggle is on.
-    let excluded = new Set();
+    // internal transfers between their own accounts) and the set flagged
+    // as income. Both seed the Stats category-picker / income-toggle
+    // defaults — they no longer drop rows on the way in, so the user can
+    // re-include a category for the current session without touching
+    // Manage.
+    const excludedByDefault = new Set();
     incomeCategoryNames = new Set();
     try {
       const cats = await App.storage.categories.all();
       cats.forEach(c => {
         if (!c || !c.name) return;
-        if (c.excluded)  excluded.add(c.name);
+        if (c.excluded)  excludedByDefault.add(c.name);
         if (c.is_income) incomeCategoryNames.add(c.name);
       });
     } catch (e) { /* non-fatal */ }
@@ -152,12 +159,19 @@
     // toggle is off. Users who migrate through Manage > Categories will
     // replace this with an explicit flag.
     if (!incomeCategoryNames.size) incomeCategoryNames.add('Income');
-    // Normalize to the legacy expense shape the dashboard expects.
+    // Stash the excluded set on the module so populateFilters() can use it
+    // to seed the per-category picker.
+    _excludedByDefault = excludedByDefault;
+    // Normalize to the legacy expense shape the dashboard expects. Note:
+    // we no longer pre-filter by `excluded` here — the per-category
+    // picker handles that downstream so the user can flip it on a whim.
     return stored
       .filter(t => t.kind !== 'transfer')
-      .filter(t => !excluded.has(t.category || ''))
       .map(normalizeForDashboard);
   }
+  // Module-scoped so populateFilters() can read it without re-querying
+  // IDB. Reset on every loadData() call.
+  let _excludedByDefault = new Set();
 
   async function collectKnownCategories() {
     const set = new Set();
@@ -207,6 +221,9 @@
       // Carry the canonical transaction type through to the dashboard so
       // the Recent Transactions table can show it without re-normalizing.
       type: t.type || null,
+      // Carry through so the Recent Transactions edit handlers can know
+      // up-front whether the row is already locked.
+      locked: !!t.locked,
       raw: t.raw || null,
       // Pre-resolved human-readable account label for display / filtering.
       account: (function () {
@@ -238,20 +255,35 @@
   function applyFilters() {
     const years = getSelectedYears();
     const month = document.getElementById('monthFilter').value;
-    const category = document.getElementById('categoryFilter').value;
     const account = document.getElementById('accountFilter').value;
     const q = document.getElementById('searchMerchant').value.toLowerCase();
+    // The category filter is a Set populated by the multi-select picker.
+    // null/undefined means "show all" (the picker hasn't been initialised
+    // yet — happens during the very first render before populateFilters).
+    // Income categories are seeded as unchecked in the picker by default,
+    // so income gating now lives entirely inside that one Set.
+    const cats = includedCategories;
     filteredExpenses = allExpenses.filter(e => {
-      // Income categories are excluded by default — toggling "Include
-      // income categories" brings them back. Gating is by category, not
-      // by row sign, so a refund booked under (e.g.) "Groceries" stays
-      // visible even when the toggle is off.
-      if (!includeIncome && incomeCategoryNames.has(e.category)) return false;
       const yMatch = years === 'all' || years.includes(e.year);
       const mMatch = month === 'all' || e.month === month;
-      const cMatch = category === 'all' || e.category === category;
+      const cMatch = !cats || cats.has(e.category);
       const kMatch = account === 'all' || e.account === account;
-      const sMatch = (e.merchant || '').toLowerCase().includes(q);
+      // Unified search: hits every column the user sees plus the raw
+      // bank merchant string, so "lufthansa" finds rows whether the
+      // display name was renamed or not.
+      let sMatch = true;
+      if (q) {
+        const haystack = [
+          e.merchant || '',
+          e.merchant_original || '',
+          e.category || '',
+          e.account || '',
+          e.type || '',
+          e.date || '',
+          String(e.amount || ''),
+        ].join('  ').toLowerCase();
+        sMatch = haystack.includes(q);
+      }
       return yMatch && mMatch && cMatch && kMatch && sMatch;
     });
     updateDashboard();
@@ -263,6 +295,10 @@
     rootEl.innerHTML = '';
     rootEl.appendChild(buildShell());
 
+    // Per-mount reset so stale category sets from a previous session don't
+    // bleed into a fresh import. populateCategoryPicker() seeds it from
+    // the categories store + visible expenses immediately after.
+    includedCategories = null;
     allExpenses = await loadData();
     filteredExpenses = allExpenses.slice();
     if (!allExpenses.length) {
@@ -274,7 +310,12 @@
     document.getElementById('stats-content').classList.remove('hidden');
     populateFilters();
     wireControls();
-    updateDashboard();
+    // Run through applyFilters() — not updateDashboard() directly — so the
+    // very first render honours the picker's seeded include/exclude state
+    // (excluded + income categories start unchecked). Without this, the
+    // initial doughnut shows every category for one frame even though the
+    // checkboxes claim otherwise.
+    applyFilters();
 
     // Re-render when the user toggles the theme (app.js emits this).
     App.util.on('themechange', updateDashboard);
@@ -288,9 +329,8 @@
 
   function buildShell() {
     const wrap = el('div', { class: 'view view--stats' });
-    wrap.appendChild(el('div', { class: 'view-breadcrumb' },
-      el('button', { class: 'linklike', onclick: () => App.router.navigate('/') }, '← Home'),
-      el('span', null, '  /  Stats')));
+    // Breadcrumb removed — the persistent top nav indicates the active
+    // section. Section title goes straight into the view body.
 
     wrap.insertAdjacentHTML('beforeend', `
       <div id="stats-empty" class="empty-state hidden">
@@ -301,31 +341,43 @@
       <div id="stats-content" class="hidden">
         <div class="monthly-chart-container">
           <div class="chart-container">
-            <h3>📊 Monthly Spending Trend</h3>
+            <h3>Monthly Spending Trend</h3>
             <div class="chart"><canvas id="monthlyChart"></canvas></div>
           </div>
         </div>
         <div class="charts-grid">
-          <div class="chart-container"><h3>🥧 Spending by Category</h3><div class="chart"><canvas id="categoryChart"></canvas></div></div>
-          <div class="chart-container"><h3>🏪 Top Merchants</h3><div class="chart"><canvas id="merchantChart"></canvas></div></div>
-          <div class="chart-container"><h3>💳 Spending by Account</h3><div class="chart"><canvas id="accountChart"></canvas></div></div>
+          <div class="chart-container"><h3>Spending by Category</h3><div class="chart"><canvas id="categoryChart"></canvas></div></div>
+          <div class="chart-container"><h3>Top Merchants</h3><div class="chart"><canvas id="merchantChart"></canvas></div></div>
+          <div class="chart-container"><h3>Spending by Account</h3><div class="chart"><canvas id="accountChart"></canvas></div></div>
         </div>
         <div class="summary-cards" id="summaryCards"></div>
         <div class="controls">
           <div class="control-group"><label>Filter by Year:</label><div id="yearFilter" class="year-picker"></div></div>
           <div class="control-group"><label for="monthFilter">Filter by Month:</label><select id="monthFilter"><option value="all">All Months</option></select></div>
-          <div class="control-group"><label for="categoryFilter">Filter by Category:</label><select id="categoryFilter"><option value="all">All Categories</option></select></div>
-          <div class="control-group"><label for="accountFilter">Filter by Account:</label><select id="accountFilter"><option value="all">All Accounts</option></select></div>
-          <div class="control-group"><label for="searchMerchant">Search Merchant:</label><input type="text" id="searchMerchant" placeholder="Enter merchant name..."></div>
-          <div class="control-group control-group--toggle">
-            <label for="includeIncomeToggle" class="toggle-inline"
-                   title="Show categories flagged as Income in Manage > Categories. Refunds in other categories stay visible either way.">
-              <input type="checkbox" id="includeIncomeToggle"> Include income categories
-            </label>
+          <div class="control-group control-group--cats">
+            <label for="categoryFilterBtn">Filter by Category:</label>
+            <div class="cat-multi" id="categoryFilter">
+              <button type="button" id="categoryFilterBtn" class="cat-multi__btn"
+                      aria-haspopup="true" aria-expanded="false">All Categories</button>
+              <div id="categoryFilterPop" class="cat-multi__pop hidden"
+                   role="dialog" aria-label="Filter by category">
+                <div class="cat-multi__head">
+                  <button type="button" id="categoryFilterAll"  class="linklike">Select all</button>
+                  <span class="muted"> · </span>
+                  <button type="button" id="categoryFilterNone" class="linklike">Clear</button>
+                  <span class="muted"> · </span>
+                  <button type="button" id="categoryFilterReset" class="linklike"
+                          title="Reset to the include/exclude defaults from Manage > Categories">Reset</button>
+                </div>
+                <div id="categoryFilterList" class="cat-multi__list"></div>
+              </div>
+            </div>
           </div>
+          <div class="control-group"><label for="accountFilter">Filter by Account:</label><select id="accountFilter"><option value="all">All Accounts</option></select></div>
+          <div class="control-group"><label for="searchMerchant">Search:</label><input type="text" id="searchMerchant" placeholder="Search merchant, category, account, type, date, amount..."></div>
         </div>
         <div class="transactions-section">
-          <h3>📋 Recent Transactions</h3>
+          <h3>Recent Transactions</h3>
           <datalist id="stats-known-categories"></datalist>
           <div id="transactionsList"></div>
         </div>
@@ -341,7 +393,7 @@
     const accounts = Array.from(new Set(allExpenses.map(e => e.account))).sort();
     populateYearPicker(years);
     populateDropdown('monthFilter', sortMonthsChronologically(months));
-    populateDropdown('categoryFilter', categories);
+    populateCategoryPicker(categories);
     populateDropdown('accountFilter', accounts);
 
     // Refresh the shared datalist for category autocomplete.
@@ -354,6 +406,141 @@
         o.value = c; dl.appendChild(o);
       });
     }
+  }
+
+  // Build the per-category include/exclude picker. The default selection
+  // mirrors Manage > Categories: every category is checked except the ones
+  // the user has flagged as excluded. The user can toggle individual rows
+  // for the current session — we don't write back to the categories store
+  // (that's still the job of Manage > Categories).
+  function populateCategoryPicker(categoryNames) {
+    allCategoryChoices = categoryNames.map(name => ({
+      name,
+      excludedByDefault: _excludedByDefault.has(name),
+      isIncomeByDefault: incomeCategoryNames.has(name),
+    }));
+    // Seed includedCategories from defaults on first populate, or when the
+    // visible category list changes underneath us (e.g. a fresh import
+    // introduced a new category — surface it as included by default).
+    // Categories flagged Excluded *or* Income in Manage > Categories are
+    // unchecked by default; the user can tick them on per-session.
+    function uncheckedByDefault(c) {
+      return c.excludedByDefault || c.isIncomeByDefault;
+    }
+    if (!includedCategories) {
+      includedCategories = new Set(
+        allCategoryChoices.filter(c => !uncheckedByDefault(c)).map(c => c.name)
+      );
+    } else {
+      allCategoryChoices.forEach(c => {
+        if (!uncheckedByDefault(c) && !includedCategories.has(c.name)) {
+          includedCategories.add(c.name);
+        }
+      });
+    }
+    renderCategoryPicker();
+    wireCategoryPicker();
+  }
+
+  function renderCategoryPicker() {
+    const list = document.getElementById('categoryFilterList');
+    const btn  = document.getElementById('categoryFilterBtn');
+    if (!list || !btn) return;
+    list.innerHTML = '';
+    allCategoryChoices.forEach(c => {
+      const id = 'cat-pick-' + cssSafe(c.name);
+      const row = el('label', { class: 'cat-multi__row', for: id });
+      const cb = el('input', {
+        type: 'checkbox', id,
+        checked: includedCategories.has(c.name) ? '' : null,
+        onchange: (e) => {
+          if (e.target.checked) includedCategories.add(c.name);
+          else includedCategories.delete(c.name);
+          updateCategoryButtonLabel();
+          applyFilters();
+        },
+      });
+      row.appendChild(cb);
+      row.appendChild(el('span', { class: 'cat-multi__name' }, c.name));
+      if (c.isIncomeByDefault) {
+        row.appendChild(el('span', {
+          class: 'cat-multi__hint muted',
+          title: 'Flagged as Income in Manage > Categories. Unchecked here by default — tick to include income in totals.',
+        }, ' income'));
+      } else if (c.excludedByDefault) {
+        row.appendChild(el('span', {
+          class: 'cat-multi__hint muted',
+          title: 'Marked Excluded in Manage > Categories. Unchecked here by default.',
+        }, ' excluded by default'));
+      }
+      list.appendChild(row);
+    });
+    updateCategoryButtonLabel();
+  }
+  function cssSafe(s) { return String(s || '').replace(/[^a-zA-Z0-9_-]+/g, '_'); }
+
+  function updateCategoryButtonLabel() {
+    const btn = document.getElementById('categoryFilterBtn');
+    if (!btn) return;
+    const total = allCategoryChoices.length;
+    const sel = includedCategories ? includedCategories.size : total;
+    if (!total) { btn.textContent = 'All Categories'; return; }
+    if (sel === total) btn.textContent = 'All Categories (' + total + ')';
+    else if (sel === 0) btn.textContent = 'No categories (0 / ' + total + ')';
+    else if (sel === 1) {
+      const only = Array.from(includedCategories)[0];
+      btn.textContent = only;
+    }
+    else btn.textContent = sel + ' of ' + total + ' categories';
+  }
+
+  function wireCategoryPicker() {
+    const btn  = document.getElementById('categoryFilterBtn');
+    const pop  = document.getElementById('categoryFilterPop');
+    const all  = document.getElementById('categoryFilterAll');
+    const none = document.getElementById('categoryFilterNone');
+    const rst  = document.getElementById('categoryFilterReset');
+    if (!btn || !pop) return;
+    // Toggle popover. Closes on outside click via the document listener
+    // attached on first open, removed on close to keep the listener stack
+    // tidy across mount/unmount cycles.
+    let outsideListener = null;
+    function open() {
+      pop.classList.remove('hidden');
+      btn.setAttribute('aria-expanded', 'true');
+      outsideListener = (e) => {
+        if (!pop.contains(e.target) && e.target !== btn) close();
+      };
+      // Defer so the click that opened us doesn't immediately close.
+      setTimeout(() => document.addEventListener('click', outsideListener), 0);
+    }
+    function close() {
+      pop.classList.add('hidden');
+      btn.setAttribute('aria-expanded', 'false');
+      if (outsideListener) {
+        document.removeEventListener('click', outsideListener);
+        outsideListener = null;
+      }
+    }
+    btn.addEventListener('click', () => {
+      if (pop.classList.contains('hidden')) open(); else close();
+    });
+    if (all) all.addEventListener('click', () => {
+      includedCategories = new Set(allCategoryChoices.map(c => c.name));
+      renderCategoryPicker(); applyFilters();
+    });
+    if (none) none.addEventListener('click', () => {
+      includedCategories = new Set();
+      renderCategoryPicker(); applyFilters();
+    });
+    if (rst) rst.addEventListener('click', () => {
+      includedCategories = new Set(
+        allCategoryChoices
+          .filter(c => !(c.excludedByDefault || c.isIncomeByDefault))
+          .map(c => c.name)
+      );
+      renderCategoryPicker(); applyFilters();
+    });
   }
 
   function populateYearPicker(years) {
@@ -393,8 +580,12 @@
 
   function wireControls() {
     document.getElementById('monthFilter').addEventListener('change', applyFilters);
-    document.getElementById('categoryFilter').addEventListener('change', applyFilters);
     document.getElementById('accountFilter').addEventListener('change', applyFilters);
+    // categoryFilter is a multi-select popover wired up in
+    // populateCategoryPicker() — no change-listener needed here. The
+    // legacy "Include income categories" toggle was removed; income
+    // categories are seeded as unchecked in the picker, and the user can
+    // re-include them per-session by ticking them.
     document.getElementById('searchMerchant').addEventListener('input', applyFilters);
     const incToggle = document.getElementById('includeIncomeToggle');
     if (incToggle) {
@@ -443,10 +634,15 @@
 
     const cards = document.getElementById('summaryCards');
     cards.innerHTML = '';
-    // When income is hidden, skip the Income/Net cards entirely — showing
-    // them as 0 / negative would be misleading. The toggle in the controls
-    // bar brings them back along with the income rows.
-    const pairs = includeIncome
+    // The Income / Net cards are conditional on the picker actually
+    // including any income-flagged categories — otherwise they'd just
+    // sit there at 0, which is noisier than skipping them.
+    const showIncome = !!incomeCategoryNames.size && (function () {
+      if (!includedCategories) return true;
+      for (const n of incomeCategoryNames) if (includedCategories.has(n)) return true;
+      return false;
+    })();
+    const pairs = showIncome
       ? [
           ['Total Spent',     formatCurrency(totalExp, cur)],
           ['Total Income',    formatCurrency(totalInc, cur)],
@@ -521,9 +717,27 @@
   function updateCategoryChart() {
     const expOnly = filteredExpenses.filter(isExpense);
     const cur = dominantCurrency(expOnly);
-    const data = {};
-    expOnly.forEach(e => { data[e.category] = (data[e.category] || 0) + e.amount; });
-    const labels = Object.keys(data), amounts = Object.values(data);
+    const totals = {};
+    expOnly.forEach(e => { totals[e.category] = (totals[e.category] || 0) + e.amount; });
+    // Sort big-to-small so the "Others" lump (when it kicks in) collects
+    // the long tail rather than the headline categories.
+    const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+    // Show up to MAX_SHOWN categories individually. When there are more,
+    // collapse the smallest into "Others" so the legend stays readable.
+    // The tooltip on the "Others" slice spells out what got rolled up.
+    const MAX_SHOWN = 9;
+    let labels, amounts, otherBreakdown = null;
+    if (sorted.length <= MAX_SHOWN + 1) {
+      labels  = sorted.map(([k]) => k);
+      amounts = sorted.map(([, v]) => v);
+    } else {
+      const head = sorted.slice(0, MAX_SHOWN);
+      const tail = sorted.slice(MAX_SHOWN);
+      const otherTotal = tail.reduce((s, [, v]) => s + v, 0);
+      labels  = [...head.map(([k]) => k), 'Others (' + tail.length + ')'];
+      amounts = [...head.map(([, v]) => v), otherTotal];
+      otherBreakdown = tail; // [[name, amount], ...]
+    }
     const ctx = needChart('categoryChart'); if (!ctx) return;
     const theme = getThemeColors();
     charts.categoryChart = new Chart(ctx, {
@@ -533,7 +747,20 @@
         responsive: true, maintainAspectRatio: false,
         plugins: {
           legend: { position: 'right', labels: { color: theme.textColor } },
-          tooltip: { callbacks: { label: (c) => c.label + ': ' + formatCurrency(c.raw, cur) } },
+          tooltip: {
+            callbacks: {
+              label: (c) => c.label + ': ' + formatCurrency(c.raw, cur),
+              // For the Others slice, expand the rolled-up categories
+              // underneath so the user can still see what's in there.
+              afterLabel: (c) => {
+                if (!otherBreakdown) return '';
+                if (c.dataIndex !== labels.length - 1) return '';
+                return otherBreakdown
+                  .map(([name, amt]) => '  • ' + name + ': ' + formatCurrency(amt, cur))
+                  .join('\n');
+              },
+            },
+          },
         },
       },
     });
@@ -635,6 +862,13 @@
     headRow.appendChild(sortableTh('Account',     'account',  getSort, setSort));
     headRow.appendChild(sortableTh('Type',        'type',     getSort, setSort));
     headRow.appendChild(sortableTh('Amount',      'amount',   getSort, setSort));
+    // Lock column mirrors Manage > Transactions: pin a row so future rule
+    // sweeps don't override its category or display name. Click to toggle.
+    const lockTh = document.createElement('th');
+    lockTh.className = 'tx-lock-col';
+    lockTh.title = 'Locked rows are not touched by category rules or merchant brand-collapses.';
+    lockTh.textContent = 'Lock';
+    headRow.appendChild(lockTh);
     thead.appendChild(headRow);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
@@ -651,8 +885,11 @@
 
     async function commitCategory(next) {
       const val = (next || '').trim() || 'Uncategorized';
-      await persistTransactionEdit(t, { category: val });
+      // Manual edit auto-locks the row so future rule sweeps don't yank
+      // it back. Same contract as Manage > Transactions.
+      await persistTransactionEdit(t, { category: val, locked: true });
       t.category = val;
+      t.locked = true;
       if (val !== 'Uncategorized' && !knownCategories.includes(val)) {
         knownCategories.push(val); knownCategories.sort();
         // Keep the page-level datalist in sync for anyone else who cares.
@@ -830,6 +1067,41 @@
     amtTd.className = 'amount-cell' + (isInc ? ' amount-cell--income' : '');
     amtTd.textContent = (isInc ? '+' : '−') + formatCurrency(t.amount, t.currency);
     tr.appendChild(amtTd);
+
+    // Lock cell — mirrors the toggle in Manage > Transactions. Stats rows
+    // already auto-lock on inline category / display-name edits, so this
+    // column is mostly a way to inspect or release that lock without
+    // jumping over to Manage.
+    const lockTd = document.createElement('td');
+    lockTd.className = 'tx-lock-col';
+    if (typeof t.id === 'number') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lock-btn ' + (t.locked ? 'lock-btn--on' : 'lock-btn--off');
+      btn.textContent = t.locked ? '🔒' : '🔓';
+      btn.title = t.locked
+        ? 'Locked — rules will not change this row\'s category or display name. Click to unlock.'
+        : 'Unlocked — click to pin this row\'s current category and display name so rules leave it alone.';
+      btn.addEventListener('click', async () => {
+        const next = !t.locked;
+        try {
+          await persistTransactionEdit(t, { locked: next });
+          t.locked = next;
+          btn.classList.toggle('lock-btn--on',  next);
+          btn.classList.toggle('lock-btn--off', !next);
+          btn.textContent = next ? '🔒' : '🔓';
+          btn.title = next
+            ? 'Locked — rules will not change this row\'s category or display name. Click to unlock.'
+            : 'Unlocked — click to pin this row\'s current category and display name so rules leave it alone.';
+          App.util.toast(next ? 'Row locked.' : 'Row unlocked.', 'success');
+        } catch (err) {
+          console.error(err);
+          App.util.toast('Lock toggle failed: ' + (err && err.message || err), 'error');
+        }
+      });
+      lockTd.appendChild(btn);
+    }
+    tr.appendChild(lockTd);
     return tr;
   }
 
@@ -937,6 +1209,15 @@
         if (!save) { renderView(); return; }
         const next = (input.value || '').trim();
         await saveMerchantOverride(t.merchant_original || t.merchant || '', next);
+        // Auto-lock this specific row — siblings still update via the
+        // merchant rule, but this row is now pinned against future
+        // rule-driven changes.
+        if (typeof t.id === 'number' && !t.locked) {
+          try {
+            await persistTransactionEdit(t, { locked: true });
+            t.locked = true;
+          } catch (e) { /* non-fatal */ }
+        }
         rebuildResolver();
         // Refresh every visible row, not just this one — the override may
         // ripple across other rows that share the same original / brand.
