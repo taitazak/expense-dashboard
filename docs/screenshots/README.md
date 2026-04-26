@@ -12,11 +12,11 @@ Current files:
 - `import-2.png` — the Import review screen (account assignment,
   inline year picker, candidate rows)
 
-To refresh: load `samples/sample-backup.json` first
-(**Manage > Backup / restore > Import everything**) so every view
-has realistic-looking data, then re-capture each tab. The bundled
-sample covers 2024 → April 2026 across 16 categories and 2
-accounts, so the Stats charts, the Recent Transactions list, and
-the Manage tables all have non-trivial structure to capture.
+To refresh: import a couple of the sample exports under `samples/`
+(any combination of the four PDFs and the Activo CSV — each carries
+24 monthly rows from Mar 2024 → Feb 2026) so every view has
+realistic-looking data, then re-capture each tab. With two or three
+sources loaded the Stats charts, Recent Transactions list, and
+Manage tables all have multi-year, multi-bank structure to capture.
 
 Pending: a `landing.png` (Home hub) for completeness.

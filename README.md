@@ -160,27 +160,37 @@ Then visit `http://localhost:8000/`.
 
 ## Try it with sample data
 
-The `samples/` folder ships with everything you need to kick the
-tires without uploading a real statement:
+The `samples/` folder ships five synthetic exports — four PDFs and
+one CSV — that you can drop into the Import flow one at a time. Each
+file carries **24 monthly transactions covering March 2024 →
+February 2026** so the Stats charts immediately show two full years
+of structure, the Recent Transactions list spans multiple years, and
+the source-filename column has variety.
 
-- `sample-backup.json` — a full backup with **295 transactions
-  spanning 2024 → April 2026** across **16 categories** and 2
-  accounts (a German N26 current account, a Portuguese ActivoBank
-  joint account). Includes recurring patterns (salary, rent,
-  utilities, internet, gym, streaming subscriptions) plus realistic
-  variable spending (groceries, restaurants, transport, occasional
-  travel and shopping bursts), 50+ keyword rules, 35+ display-name
-  rules, and per-merchant overrides. Load via **Manage > Backup /
-  restore > Import everything** — every chart on the Stats page
-  immediately has interesting structure.
-- `n26-statement.pdf`, `santander-statement.pdf`,
-  `ing-statement.pdf`, `activo-statement.pdf`, `leumi-statement.pdf`
-  — one synthetic PDF per template, shaped to match each parser's
-  expected layout. Drop them into the Import flow one at a time to
-  see each parser run end-to-end.
+- `n26-statement.pdf` — Germany, exercises the N26 PDF parser.
+  German categories (Lebensmittel, Unterhaltung, Transport, …) so
+  the import-time German→English category translation gets a
+  workout.
+- `santander-statement.pdf` — Portugal, Santander PT EXTRATO.
+  Portuguese category names; the parser also demos the inline year
+  picker because Santander statements don't always carry their own
+  year anchor.
+- `ing-statement.pdf` — Germany, ING-DiBa Kontoauszug.
+- `leumi-statement.pdf` — Israel, Bank Leumi credit card statement
+  (RTL Hebrew supported).
+- `activo-statement.csv` — Portugal, ActivoBank CSV export.
+  Portuguese headers (`Data;Descrição;Valor;Categoria;Tipo;Saldo`),
+  DD/MM/YYYY dates, comma decimals, semicolon delimiter — exercises
+  the CSV mapper, the saved-template flow, and the category
+  translator end-to-end.
 
-The sample PDFs contain only made-up transactions and placeholder
-IBANs — safe to commit, safe to share.
+All files contain only made-up transactions and placeholder IBANs —
+safe to commit, safe to share.
+
+After importing two or three of them you'll have a multi-bank,
+multi-currency, multi-year dataset to play with. For the cleanest
+demo: import them in any order, give each one a dedicated account
+on the review screen, and head to **Stats**.
 
 ## Privacy
 
@@ -190,9 +200,10 @@ IBANs — safe to commit, safe to share.
   (`cdnjs.cloudflare.com`) with SRI integrity pins. If you want a
   fully air-gapped copy, vendor those libraries locally and swap
   the `<script>` URLs in `index.html`.
-- Use **Manage > Backup / restore > Export everything** to get a
-  JSON snapshot of your transactions, accounts, rules, and
-  settings. Keep those backups somewhere private — the project
+- Use **Manage > Backup / restore > Export everything** any time
+  to grab a JSON snapshot of your transactions, accounts, rules,
+  and settings. Re-import the same JSON via **Import everything**
+  to restore. Keep those backups somewhere private — the project
   `.gitignore` already excludes `kalkala-backup-*.json`.
 
 ## Project layout
