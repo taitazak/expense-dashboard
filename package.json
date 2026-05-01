@@ -1,0 +1,13 @@
+{
+  "name": "expense-dashboard",
+  "private": true,
+  "description": "Personal Expenses Dashboard — local-first PDF/CSV bank statement importer + analytics. The app itself is plain static HTML/JS with no build step; this package.json exists only to wire up the test harness.",
+  "scripts": {
+    "test": "node --test tests/processing/*.test.js tests/integration/*.test.js",
+    "test:watch": "node --test --watch tests/processing/*.test.js tests/integration/*.test.js",
+    "lint": "for f in src/**/*.js; do node --check \"$f\" || exit 1; done && echo 'all .js files parse'"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
+  }
+}

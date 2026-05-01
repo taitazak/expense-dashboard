@@ -22,19 +22,57 @@ There is no `npm install`. There is no bundler. There is no watcher.
 
 ## Before opening a PR
 
-One check is effectively mandatory:
+Two checks. Both fast.
 
 ```sh
-# Syntax-check every JS file in src/
+# 1. Syntax-check every JS file in src/.
 find src -name '*.js' -print0 | xargs -0 -n1 node --check
+
+# 2. Run the test suite. tests/ uses Node's built-in node:test runner.
+#    The storage suite needs fake-indexeddb — `npm install` once and
+#    you're set.
+npm install        # one-time (only fake-indexeddb is fetched)
+npm test
 ```
 
-Zero output means every file parses. Any error means the PR is not
-ready.
+`npm test` should report all green. If you touched a sample PDF, also
+re-run `python3 tools/extract_for_tests.py` to refresh the fixture
+that the template tests read.
 
-Beyond that, a manual smoke test with a real statement (or the exported
-sample JSON under Manage → Backups) is the honest way to confirm you
+Beyond that, a manual smoke test with a real statement (or one of the
+synthetic samples under `samples/`) is the honest way to confirm you
 haven't broken the import pipeline.
+
+## Tests
+
+Layout under `tests/`:
+
+```
+tests/
+├── helpers/load.js       # IIFE bootstrap shim — gives Node a window/IDB
+├── processing/           # one suite per src/ module
+│   ├── util.test.js  translate.test.js  csv.test.js
+│   ├── normalize.test.js  categorize.test.js  duplicate.test.js
+│   ├── dates.test.js  transfer.test.js  storage.test.js
+│   └── templates.test.js (needs tests/fixtures/extracted-pdfs.json)
+└── integration/          # cross-module pipelines
+    ├── samples.test.js
+    └── csv-pipeline.test.js
+```
+
+Quick conventions:
+
+- Each test file requires `'./helpers/load.js'` and uses one of
+  `loadUtil()` / `loadProcessing()` / `loadTemplates()` /
+  `loadWithIDB()`.
+- `loadWithIDB()` requires `fake-indexeddb` (`npm install` once).
+  Without it, only the storage suite skips/fails — everything else
+  runs unmodified.
+- The template tests read pre-extracted PDF text from
+  `tests/fixtures/extracted-pdfs.json`. If the file is missing, the
+  whole suite is skipped with a clear message; regenerate it by
+  running `python3 tools/extract_for_tests.py` (needs `pdfplumber`).
+- See `tests/README.md` for the full how-to.
 
 ## Module conventions
 

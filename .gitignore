@@ -20,7 +20,8 @@ kalkala-backup-*.json
 real_expense_data.json
 my_expenses.json
 
-# Node tooling (only relevant if a contributor runs `node --check` via a
-# local install — not needed to run the app itself)
+# Node tooling — only relevant for running the test suite under
+# tests/. The app itself ships pure static HTML/JS with no build step.
 node_modules/
 npm-debug.log
+package-lock.json
